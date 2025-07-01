@@ -4,6 +4,10 @@ import numpy.testing as npt
 
 from collections import Counter
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def test_rainflow():
     waveform = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0])
@@ -15,8 +19,8 @@ def test_rainflow():
         min_chunk_size=64 * 1024,
     )
 
-    print("Cycles:", cycles)
-    print("Remaining Peaks:", remaining_peaks)
+    logger.info("Cycles:", cycles)
+    logger.info("Remaining Peaks:", remaining_peaks)
 
     npt.assert_array_equal(
         remaining_peaks,
@@ -37,9 +41,9 @@ def test_waveform_stitching():
         min_chunk_size=64 * 1024,
     )
 
-    print("Waveform 1:", waveform1)
-    print("Cycles 1:", cycles1)
-    print("Remaining Peaks 1:", remaining_peaks)
+    logger.info("Waveform 1:", waveform1)
+    logger.info("Cycles 1:", cycles1)
+    logger.info("Remaining Peaks 1:", remaining_peaks)
 
     cycles2, remaining_peaks = typhoon.rainflow(
         waveform=waveform2,
@@ -48,13 +52,13 @@ def test_waveform_stitching():
         min_chunk_size=64 * 1024,
     )
 
-    print("Waveform 2:", waveform2)
-    print("Cycles 2:", cycles2)
-    print("Remaining Peaks 2:", remaining_peaks)
+    logger.info("Waveform 2:", waveform2)
+    logger.info("Cycles 2:", cycles2)
+    logger.info("Remaining Peaks 2:", remaining_peaks)
 
     cycles_merged = Counter(cycles1) + Counter(cycles2)
 
-    print("Merged Cycles:", cycles_merged)
+    logger.info("Merged Cycles:", cycles_merged)
 
     npt.assert_array_equal(
         remaining_peaks,
@@ -71,8 +75,8 @@ def test_reference_load_waveform():
             bin_size=0,
             min_chunk_size=64 * 1024,
         )
-    print("Reference Cycles:", cycles)
-    print("Reference Half-Cycles:", max(0, len(remaining_peaks) - 1))
+    logger.info("Reference Cycles:", cycles)
+    logger.info("Reference Half-Cycles:", max(0, len(remaining_peaks) - 1))
 
     assert cycles == {(-30.0, -60.0): 1, (90.0, 30.0): 1, (120.0, 60.0): 1, (-30.0, 0.0): 1, (60.0, 0.0): 1}
     assert len(remaining_peaks) - 1 == 5
