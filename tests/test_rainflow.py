@@ -12,7 +12,7 @@ def test_rainflow():
         waveform=waveform,
         last_peaks=last_peaks,
         bin_size=1.0,
-        min_chunk_size=64*1024,
+        min_chunk_size=64 * 1024,
     )
 
     print("Cycles:", cycles)
@@ -34,7 +34,7 @@ def test_waveform_stitching():
         waveform=waveform1,
         last_peaks=None,
         bin_size=1.0,
-        min_chunk_size=64*1024,
+        min_chunk_size=64 * 1024,
     )
 
     print("Waveform 1:", waveform1)
@@ -45,7 +45,7 @@ def test_waveform_stitching():
         waveform=waveform2,
         last_peaks=remaining_peaks,
         bin_size=1.0,
-        min_chunk_size=64*1024,
+        min_chunk_size=64 * 1024,
     )
 
     print("Waveform 2:", waveform2)
@@ -58,12 +58,13 @@ def test_waveform_stitching():
 
     npt.assert_array_equal(
         remaining_peaks,
-        np.array([0., 5.]),
+        np.array([0.0, 5.0]),
     )
 
     assert cycles_merged == {(2.0, 1.0): 2, (4.0, 3.0): 1}
 
-def test_benchmark(benchmark):
+
+def test_benchmark_128m_samples(benchmark):
     """Will benchmark the rainflow counting algorithm on a random waveform with 512 * 4096 samples"""
 
     def large_waveform_rainflow_counting(waveform: np.typing.NDArray[np.float64]):
@@ -71,13 +72,13 @@ def test_benchmark(benchmark):
             waveform=waveform,
             last_peaks=None,
             bin_size=0.1,
-            min_chunk_size=64*1024,
+            min_chunk_size=64 * 1024,
         )
-        
+
         print("Remaining Peaks:", remaining_peaks.shape)
 
     np.random.seed(42)
-    waveform = np.random.random_sample(512*1024)
+    waveform = np.random.random_sample(128 * 1024 * 1024)
 
     @benchmark
     def run():
