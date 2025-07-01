@@ -162,8 +162,6 @@ fn rainflow<'py>(
     let num_cores = rayon::current_num_threads();
     let min_chunk_size = min_chunk_size.unwrap_or(64*1024); // Set your minimum chunk size
 
-    println!("Num Cores: {num_cores}");
-
     let chunk_size = std::cmp::max(waveform.len() / num_cores, min_chunk_size);
     let chunks: Vec<_> = waveform
         .axis_chunks_iter(Axis(0), chunk_size)
