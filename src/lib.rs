@@ -1,21 +1,21 @@
 use rayon::prelude::*;
 use tracing_subscriber::fmt::format::FmtSpan;
-use std::collections::HashMap;
 
 use pyo3::prelude::*;
 
 use numpy::ndarray::{ArrayView1, Axis};
 use numpy::{PyArray1, PyReadonlyArray1};
-use ordered_float::OrderedFloat;
 use pyo3::types::PyDict;
 
+use ahash::AHashMap;
+use ordered_float::OrderedFloat;
+
 type CyclesKey = (OrderedFloat<f64>, OrderedFloat<f64>);
-type CyclesMap = HashMap<CyclesKey, i64>;
+type CyclesMap = AHashMap<(OrderedFloat<f64>, OrderedFloat<f64>), usize>;
 
 use std::sync::Once;
 use tracing::{instrument, span, trace, Level};
 use tracing_subscriber::{fmt};
-
 
 static TRACING_INIT: Once = Once::new();
 
@@ -139,7 +139,6 @@ fn peak_peak_and_rainflow_counting(
 
                     let quantized_from = quantize(from, bin_size);
                     let quantized_to = quantize(to, bin_size);
-
                     key = (
                         OrderedFloat::from(quantized_from),
                         OrderedFloat::from(quantized_to),
@@ -215,7 +214,7 @@ fn rainflow<'py>(
         .collect();
 
     // Merge results
-    let mut total_cycles: CyclesMap = HashMap::new();
+    let mut total_cycles: CyclesMap = CyclesMap::new();
     let mut all_peaks: Vec<f64> = Vec::new();
     for (cycles, peaks) in results {
         for (k, v) in cycles {
@@ -231,7 +230,7 @@ fn rainflow<'py>(
     }
     all_peaks.clear();
     all_peaks.extend(final_peaks);
-
+    
     let py_cycles: Bound<'_, PyDict> = PyDict::new(py);
     for ((k1, k2), v) in &total_cycles {
         let key = (k1.into_inner(), k2.into_inner());
