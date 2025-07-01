@@ -1,4 +1,5 @@
 use rayon::prelude::*;
+use tracing_subscriber::fmt::format::FmtSpan;
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
@@ -11,18 +12,43 @@ use pyo3::types::PyDict;
 type CyclesKey = (OrderedFloat<f64>, OrderedFloat<f64>);
 type CyclesMap = HashMap<CyclesKey, i64>;
 
+use std::sync::Once;
+use tracing::{instrument, span, trace, Level};
+use tracing_subscriber::{fmt};
+
+
+static TRACING_INIT: Once = Once::new();
+
+#[pyfunction]
+fn init_tracing() {
+    TRACING_INIT.call_once(|| {
+        let subscriber = fmt()
+            .with_max_level(Level::TRACE)
+            .with_writer(std::io::stdout)
+            .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
+            .compact()
+            .finish();
+
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("Failed to set tracing subscriber");
+    });
+}
+
 fn quantize(x: f64, bin_size: f64) -> f64 {
     let half_bin = bin_size / 2.0;
     let shifted = x + half_bin.copysign(x); // shift by half a bin in the direction of x
     (shifted / bin_size).floor() * bin_size
 }
 
+#[instrument(fields(), skip_all)]
 fn peak_peak_and_rainflow_counting(
     waveform: ArrayView1<f64>,
     last_peaks: Option<ArrayView1<f64>>,
     bin_size: f64,
 ) -> (CyclesMap, Vec<f64>) {
     // Peak-Peak Waveform Construction
+    trace!("peak-peak waveform construction");
+
     let last_peaks_vec: Vec<f64> = last_peaks
         .map(|arr| arr.to_owned().into_raw_vec_and_offset().0)
         .unwrap_or_else(Vec::new);
@@ -70,6 +96,8 @@ fn peak_peak_and_rainflow_counting(
     }
 
     // Rainflow Counting with windowed 4 point method
+    trace!("rainflow counting");
+
     let mut cycles: CyclesMap = CyclesMap::new();
 
     while peaks.len() > 3 {
@@ -149,6 +177,8 @@ fn peak_peak_and_rainflow_counting(
         }
     }
 
+    trace!("rainflow counting finished");
+
     return (cycles, peaks);
 }
 
@@ -160,6 +190,9 @@ fn rainflow<'py>(
     bin_size: Option<f64>,
     min_chunk_size: Option<usize>,
 ) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyArray1<f64>>)> {
+    let span = span!(Level::TRACE, "rainflow");
+    let _enter = span.enter();
+
     let bin_size = bin_size.unwrap_or(0.0);
     let waveform = waveform.as_array();
     let num_cores = rayon::current_num_threads();
@@ -213,6 +246,8 @@ fn rainflow<'py>(
 /// A Python module implemented in Rust.
 #[pymodule]
 fn typhoon(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(init_tracing, m)?)?;
     m.add_function(wrap_pyfunction!(rainflow, m)?)?;
+
     Ok(())
 }

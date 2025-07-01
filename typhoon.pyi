@@ -10,3 +10,6 @@ def rainflow(
     bin_size: float = 0,
     min_chunk_size: float = 64 * 1024,
 ) -> Tuple[Dict[Tuple[float, float], int], Array1D]: ...
+
+def init_tracing() -> None:
+    ...
