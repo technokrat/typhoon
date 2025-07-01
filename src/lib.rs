@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use rayon::prelude::*;
 
 use pyo3::prelude::*;
 
-use numpy::ndarray::{ArrayView1};
+use numpy::ndarray::{ArrayView1, Axis};
 use numpy::{PyArray1, PyReadonlyArray1};
 use ordered_float::OrderedFloat;
 use pyo3::types::PyDict;
@@ -154,18 +155,61 @@ fn rainflow<'py>(
     waveform: PyReadonlyArray1<f64>,
     last_peaks: Option<PyReadonlyArray1<f64>>,
     bin_size: Option<f64>,
+    min_chunk_size: Option<usize>,
 ) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyArray1<f64>>)> {
     let bin_size = bin_size.unwrap_or(0.0);
-    let last_peaks = last_peaks.as_ref().map(|arr| arr.as_array());
-    let (cycles, peaks) = peak_peak_and_rainflow_counting(waveform.as_array(), last_peaks, bin_size);
+    let waveform = waveform.as_array();
+    let num_cores = rayon::current_num_threads();
+    let min_chunk_size = min_chunk_size.unwrap_or(64*1024); // Set your minimum chunk size
+
+    println!("Num Cores: {num_cores}");
+
+    let chunk_size = std::cmp::max(waveform.len() / num_cores, min_chunk_size);
+    let chunks: Vec<_> = waveform
+        .axis_chunks_iter(Axis(0), chunk_size)
+        .collect();
+
+    // Prepare last_peaks for the first chunk, None for others
+    let mut last_peaks_vec = vec![last_peaks.as_ref().map(|arr| arr.as_array())];
+    last_peaks_vec.extend((1..chunks.len()).map(|_| None));
+
+    // Parallel processing
+    let results: Vec<_> = chunks
+        .par_iter()
+        .zip(last_peaks_vec.into_par_iter())
+        .map(|(chunk, last_peaks)| {
+            peak_peak_and_rainflow_counting(chunk.view(), last_peaks, bin_size)
+        })
+        .collect();
+
+    // Merge results
+    let mut total_cycles: CyclesMap = HashMap::new();
+    let mut all_peaks: Vec<f64> = Vec::new();
+    for (cycles, peaks) in results {
+        for (k, v) in cycles {
+            *total_cycles.entry(k).or_insert(0) += v;
+        }
+        all_peaks.extend(peaks);
+    }
+
+    let (final_cycles, final_peaks) = peak_peak_and_rainflow_counting(
+        ArrayView1::from(&all_peaks),
+        None,
+        bin_size,
+    );
+    for (k, v) in final_cycles {
+        *total_cycles.entry(k).or_insert(0) += v;
+    }
+    all_peaks.clear();
+    all_peaks.extend(final_peaks);
 
     let py_cycles: Bound<'_, PyDict> = PyDict::new(py);
-    for ((k1, k2), v) in &cycles {
+    for ((k1, k2), v) in &total_cycles {
         let key = (k1.into_inner(), k2.into_inner());
         py_cycles.set_item(key, *v)?;
     }
 
-    let py_peaks = PyArray1::from_vec(py, peaks);
+    let py_peaks = PyArray1::from_vec(py, all_peaks);
 
     Ok((py_cycles, py_peaks))
 }

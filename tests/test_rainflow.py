@@ -12,6 +12,7 @@ def test_rainflow():
         waveform=waveform,
         last_peaks=last_peaks,
         bin_size=1.0,
+        min_chunk_size=64*1024,
     )
 
     print("Cycles:", cycles)
@@ -33,6 +34,7 @@ def test_waveform_stitching():
         waveform=waveform1,
         last_peaks=None,
         bin_size=1.0,
+        min_chunk_size=64*1024,
     )
 
     print("Waveform 1:", waveform1)
@@ -43,6 +45,7 @@ def test_waveform_stitching():
         waveform=waveform2,
         last_peaks=remaining_peaks,
         bin_size=1.0,
+        min_chunk_size=64*1024,
     )
 
     print("Waveform 2:", waveform2)
@@ -67,13 +70,14 @@ def test_benchmark(benchmark):
         cycles, remaining_peaks = typhoon.rainflow(
             waveform=waveform,
             last_peaks=None,
-            bin_size=0.01,
+            bin_size=0.1,
+            min_chunk_size=64*1024,
         )
         
         print("Remaining Peaks:", remaining_peaks.shape)
 
     np.random.seed(42)
-    waveform = np.random.random_sample(4096*128)
+    waveform = np.random.random_sample(512*1024)
 
     @benchmark
     def run():
