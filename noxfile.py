@@ -20,7 +20,7 @@ def test(session):
     """Run Python tests using pytest."""
     session.install("maturin")
     session.run("maturin", "develop")
-    session.install("pytest", "numpy")
+    session.install("pytest", "numpy", "pytest-benchmark")
     session.run("pytest", "tests")
 
 

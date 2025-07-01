@@ -25,7 +25,7 @@ def test_rainflow():
     assert cycles == {(2.0, 1.0): 2}
 
 
-def test_stitching():
+def test_waveform_stitching():
     waveform1 = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0])
     waveform2 = np.array([3.0, 5.0])
 
@@ -59,3 +59,22 @@ def test_stitching():
     )
 
     assert cycles_merged == {(2.0, 1.0): 2, (4.0, 3.0): 1}
+
+def test_benchmark(benchmark):
+    """Will benchmark the rainflow counting algorithm on a random waveform with 512 * 4096 samples"""
+
+    def large_waveform_rainflow_counting(waveform: np.typing.NDArray[np.float64]):
+        cycles, remaining_peaks = typhoon.rainflow(
+            waveform=waveform,
+            last_peaks=None,
+            bin_size=0.01,
+        )
+        
+        print("Remaining Peaks:", remaining_peaks.shape)
+
+    np.random.seed(42)
+    waveform = np.random.random_sample(4096*128)
+
+    @benchmark
+    def run():
+        large_waveform_rainflow_counting(waveform)

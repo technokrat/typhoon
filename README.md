@@ -1,3 +1,64 @@
+# typhoon
+Typhoon is a rainflow counting implementation by Markus Wegmann (mw@technokrat.ch) written in Rust, which uses a new windowed four-point method which is optimized for streaming chunk processing in online measurement streams and parallel multicore processing (in the future).
+
+## Installation
+Add the package `typhoon` to your Python project, e.g.
+
+```python
+poetry add typhoon
+```
+
+## Example Usage
+
+### Single Waveform
+
+```python
+import typhoon
+import numpy as np
+
+waveform = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0])
+last_peaks = np.array([])
+cycles, remaining_peaks = typhoon.rainflow(
+    waveform=waveform,
+    last_peaks=last_peaks,
+    bin_size=1.0,
+)
+
+print("Cycles:", cycles)
+print("Remaining Peaks:", remaining_peaks)
+```
+
+### Multiple Waveform Chunks
+
+```python
+waveform1 = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0])
+waveform2 = np.array([3.0, 5.0])
+
+cycles1, remaining_peaks = typhoon.rainflow(
+    waveform=waveform1,
+    last_peaks=None,
+    bin_size=1.0,
+)
+
+print("Waveform 1:", waveform1)
+print("Cycles 1:", cycles1)
+print("Remaining Peaks 1:", remaining_peaks)
+
+cycles2, remaining_peaks = typhoon.rainflow(
+    waveform=waveform2,
+    last_peaks=remaining_peaks,
+    bin_size=1.0,
+)
+
+print("Waveform 2:", waveform2)
+print("Cycles 2:", cycles2)
+print("Remaining Peaks 2:", remaining_peaks)
+
+cycles_merged = Counter(cycles1) + Counter(cycles2)
+
+print("Merged Cycles:", cycles_merged)
+```
+
 ## Testing
 
 ```sh

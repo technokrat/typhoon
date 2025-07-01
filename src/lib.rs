@@ -31,7 +31,7 @@ fn rainflow<'py>(
         .unwrap_or_else(Vec::new);
     let last_peaks_array = ArrayView1::from(&last_peaks_vec);
 
-    let mut peaks = Vec::new();
+    let mut peaks = Vec::with_capacity(last_peaks_vec.len() + waveform.len());
     let last_len = last_peaks_array.len();
     if last_len > 1 {
         peaks.extend(last_peaks_array.iter().take(last_len).cloned());
@@ -77,7 +77,7 @@ fn rainflow<'py>(
     while peaks.len() > 3 {
         let mut i = 0;
         let mut cycle_found = false;
-        let mut new_peaks = Vec::new();
+        let mut new_peaks = Vec::with_capacity(peaks.len() / 2);
 
         loop {
             let (lower, upper) = if peaks[i] <= peaks[i + 3] {
