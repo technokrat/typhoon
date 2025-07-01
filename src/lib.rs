@@ -16,18 +16,10 @@ fn quantize(x: f64, bin_size: f64) -> f64 {
     (shifted / bin_size).floor() * bin_size
 }
 
-#[pyfunction]
-fn rainflow<'py>(
-    py: Python<'py>,
-    waveform: PyReadonlyArray1<f64>,
-    last_peaks: Option<PyReadonlyArray1<f64>>,
-    bin_size: Option<f64>,
-) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyArray1<f64>>)> {
-    let bin_size: f64 = bin_size.unwrap_or_default();
-
-    let waveform = waveform.as_array();
+fn peak_peak_and_rainflow_counting(waveform: ArrayView1<f64>, last_peaks: Option<ArrayView1<f64>>, bin_size: f64) -> (CyclesMap, Vec<f64>) {
+    // Peak-Peak Waveform Construction
     let last_peaks_vec: Vec<f64> = last_peaks
-        .map(|arr| arr.as_array().to_owned().into_raw_vec_and_offset().0)
+        .map(|arr| arr.to_owned().into_raw_vec_and_offset().0)
         .unwrap_or_else(Vec::new);
     let last_peaks_array = ArrayView1::from(&last_peaks_vec);
 
@@ -72,8 +64,9 @@ fn rainflow<'py>(
         peaks.push(waveform[n - 1]);
     }
 
+    // Rainflow Counting with windowed 4 point method
     let mut cycles: CyclesMap = CyclesMap::new();
-
+    
     while peaks.len() > 3 {
         let mut i = 0;
         let mut cycle_found = false;
@@ -150,6 +143,21 @@ fn rainflow<'py>(
             break;
         }
     }
+
+    return (cycles, peaks)
+
+}
+
+#[pyfunction]
+fn rainflow<'py>(
+    py: Python<'py>,
+    waveform: PyReadonlyArray1<f64>,
+    last_peaks: Option<PyReadonlyArray1<f64>>,
+    bin_size: Option<f64>,
+) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyArray1<f64>>)> {
+    let bin_size = bin_size.unwrap_or(0.0);
+    let last_peaks = last_peaks.as_ref().map(|arr| arr.as_array());
+    let (cycles, peaks) = peak_peak_and_rainflow_counting(waveform.as_array(), last_peaks, bin_size);
 
     let py_cycles: Bound<'_, PyDict> = PyDict::new(py);
     for ((k1, k2), v) in &cycles {
