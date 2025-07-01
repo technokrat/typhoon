@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 use pyo3::prelude::*;
 
@@ -17,7 +17,11 @@ fn quantize(x: f64, bin_size: f64) -> f64 {
     (shifted / bin_size).floor() * bin_size
 }
 
-fn peak_peak_and_rainflow_counting(waveform: ArrayView1<f64>, last_peaks: Option<ArrayView1<f64>>, bin_size: f64) -> (CyclesMap, Vec<f64>) {
+fn peak_peak_and_rainflow_counting(
+    waveform: ArrayView1<f64>,
+    last_peaks: Option<ArrayView1<f64>>,
+    bin_size: f64,
+) -> (CyclesMap, Vec<f64>) {
     // Peak-Peak Waveform Construction
     let last_peaks_vec: Vec<f64> = last_peaks
         .map(|arr| arr.to_owned().into_raw_vec_and_offset().0)
@@ -67,7 +71,7 @@ fn peak_peak_and_rainflow_counting(waveform: ArrayView1<f64>, last_peaks: Option
 
     // Rainflow Counting with windowed 4 point method
     let mut cycles: CyclesMap = CyclesMap::new();
-    
+
     while peaks.len() > 3 {
         let mut i = 0;
         let mut cycle_found = false;
@@ -132,7 +136,7 @@ fn peak_peak_and_rainflow_counting(waveform: ArrayView1<f64>, last_peaks: Option
             }
 
             if i >= (peaks.len() - 3) {
-                new_peaks.extend_from_slice(&peaks[i..=peaks.len()-1]);
+                new_peaks.extend_from_slice(&peaks[i..=peaks.len() - 1]);
                 break;
             }
         }
@@ -145,8 +149,7 @@ fn peak_peak_and_rainflow_counting(waveform: ArrayView1<f64>, last_peaks: Option
         }
     }
 
-    return (cycles, peaks)
-
+    return (cycles, peaks);
 }
 
 #[pyfunction]
@@ -160,12 +163,10 @@ fn rainflow<'py>(
     let bin_size = bin_size.unwrap_or(0.0);
     let waveform = waveform.as_array();
     let num_cores = rayon::current_num_threads();
-    let min_chunk_size = min_chunk_size.unwrap_or(64*1024); // Set your minimum chunk size
+    let min_chunk_size = min_chunk_size.unwrap_or(64 * 1024); // Set your minimum chunk size
 
     let chunk_size = std::cmp::max(waveform.len() / num_cores, min_chunk_size);
-    let chunks: Vec<_> = waveform
-        .axis_chunks_iter(Axis(0), chunk_size)
-        .collect();
+    let chunks: Vec<_> = waveform.axis_chunks_iter(Axis(0), chunk_size).collect();
 
     // Prepare last_peaks for the first chunk, None for others
     let mut last_peaks_vec = vec![last_peaks.as_ref().map(|arr| arr.as_array())];
@@ -190,11 +191,8 @@ fn rainflow<'py>(
         all_peaks.extend(peaks);
     }
 
-    let (final_cycles, final_peaks) = peak_peak_and_rainflow_counting(
-        ArrayView1::from(&all_peaks),
-        None,
-        bin_size,
-    );
+    let (final_cycles, final_peaks) =
+        peak_peak_and_rainflow_counting(ArrayView1::from(&all_peaks), None, bin_size);
     for (k, v) in final_cycles {
         *total_cycles.entry(k).or_insert(0) += v;
     }
