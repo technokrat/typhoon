@@ -1,5 +1,9 @@
 # typhoon
-Typhoon is a rainflow counting implementation by Markus Wegmann (mw@technokrat.ch) written in Rust, which uses a new windowed four-point method which is optimized for streaming chunk processing in online measurement streams and parallel multicore processing (in the future).
+Typhoon is a rainflow counting Python module written in Rust by Markus Wegmann (mw@technokrat.ch)
+
+It uses a new windowed four-point counting method which can be run in parallel on multiple cores and allows for chunk-based sample stream processing, preserving half cycles for future chunks.
+
+It is therefore intended for real-time processing of load captures and serves as as crucial part of i-Spring's in-edge data processing chain.
 
 ## Installation
 Add the package `typhoon` to your Python project, e.g.
