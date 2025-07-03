@@ -15,7 +15,7 @@ type CyclesMap = AHashMap<(OrderedFloat<f64>, OrderedFloat<f64>), usize>;
 
 use std::sync::Once;
 use tracing::{instrument, span, trace, Level};
-use tracing_subscriber::{fmt};
+use tracing_subscriber::fmt;
 
 static TRACING_INIT: Once = Once::new();
 
@@ -49,12 +49,12 @@ fn peak_peak_and_rainflow_counting(
     // Peak-Peak Waveform Construction
     trace!("peak-peak waveform construction");
 
-    let last_peaks_vec: Vec<f64> = last_peaks
-        .map(|arr| arr.to_owned().into_raw_vec_and_offset().0)
-        .unwrap_or_else(Vec::new);
-    let last_peaks_array = ArrayView1::from(&last_peaks_vec);
+    let last_peaks_array = match last_peaks {
+        Some(arr) => arr,
+        None => ArrayView1::from(&[]),
+    };
 
-    let mut peaks = Vec::with_capacity(last_peaks_vec.len() + waveform.len());
+    let mut peaks = Vec::with_capacity(last_peaks_array.len() + waveform.len());
     let last_len = last_peaks_array.len();
     if last_len > 1 {
         peaks.extend(last_peaks_array.iter().take(last_len).cloned());
@@ -205,39 +205,36 @@ fn rainflow<'py>(
     last_peaks_vec.extend((1..chunks.len()).map(|_| None));
 
     // Parallel processing
-    let results: Vec<_> = chunks
+    let (mut total_cycles, all_peaks) = chunks
         .par_iter()
         .zip(last_peaks_vec.into_par_iter())
         .map(|(chunk, last_peaks)| {
             peak_peak_and_rainflow_counting(chunk.view(), last_peaks, bin_size)
         })
-        .collect();
-
-    // Merge results
-    let mut total_cycles: CyclesMap = CyclesMap::new();
-    let mut all_peaks: Vec<f64> = Vec::new();
-    for (cycles, peaks) in results {
-        for (k, v) in cycles {
-            *total_cycles.entry(k).or_insert(0) += v;
-        }
-        all_peaks.extend(peaks);
-    }
+        .reduce(
+            || (CyclesMap::new(), Vec::new()),
+            |(mut acc_cycles, mut acc_peaks), (new_cycles, new_peaks)| {
+                for (k, v) in new_cycles {
+                    *acc_cycles.entry(k).or_insert(0) += v;
+                }
+                acc_peaks.extend(new_peaks);
+                (acc_cycles, acc_peaks)
+            },
+        );
 
     let (final_cycles, final_peaks) =
         peak_peak_and_rainflow_counting(ArrayView1::from(&all_peaks), None, bin_size);
     for (k, v) in final_cycles {
         *total_cycles.entry(k).or_insert(0) += v;
     }
-    all_peaks.clear();
-    all_peaks.extend(final_peaks);
-    
+
     let py_cycles: Bound<'_, PyDict> = PyDict::new(py);
     for ((k1, k2), v) in &total_cycles {
         let key = (k1.into_inner(), k2.into_inner());
         py_cycles.set_item(key, *v)?;
     }
 
-    let py_peaks = PyArray1::from_vec(py, all_peaks);
+    let py_peaks = PyArray1::from_vec(py, final_peaks);
 
     Ok((py_cycles, py_peaks))
 }
