@@ -3,7 +3,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 use pyo3::prelude::*;
 
-use numpy::ndarray::{ArrayView1, Axis};
+use numpy::ndarray::{ArrayView1, Array1, Axis};
 use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::types::PyDict;
 
@@ -41,7 +41,7 @@ fn quantize(x: f64, bin_size: f64) -> f64 {
 }
 
 #[instrument(fields(), skip_all)]
-fn peak_peak_and_rainflow_counting(
+fn peak_peak_and_rainflow_counting<'a>(
     waveform: ArrayView1<f64>,
     last_peaks: Option<ArrayView1<f64>>,
     bin_size: f64,
@@ -49,50 +49,43 @@ fn peak_peak_and_rainflow_counting(
     // Peak-Peak Waveform Construction
     trace!("peak-peak waveform construction");
 
-    let last_peaks_array = match last_peaks {
-        Some(arr) => arr,
-        None => ArrayView1::from(&[]),
+    let waveform: Array1<f64> = if let Some(last_peaks) = last_peaks {
+        let mut combined = last_peaks.to_owned().to_vec();
+        combined.extend_from_slice(waveform.as_slice().unwrap());
+        combined.into()
+    } else {
+        waveform.to_owned()
     };
 
-    let mut peaks = Vec::with_capacity(last_peaks_array.len() + waveform.len());
-    let last_len = last_peaks_array.len();
-    if last_len > 1 {
-        peaks.extend(last_peaks_array.iter().take(last_len).cloned());
-    }
+    let waveform = waveform.view();
+
     let n = waveform.len();
-
-    let mut last_dir = 0;
-
-    if last_len > 1 {
-        let diff: f64 = last_peaks_array[last_len - 1] - last_peaks_array[last_len - 2];
-        last_dir = diff.signum() as i32;
-    }
-
-    if n > 0 {
-        if last_len > 0 {
-            let diff = waveform[0] - last_peaks_array[last_len - 1];
-            let dir = diff.signum() as i32;
-            if dir != 0 && dir != last_dir && last_dir != 0 {
-            } else {
-                peaks.remove(last_len - 1);
-            }
-            last_dir = dir;
-        } else {
-            peaks.push(waveform[0]);
-        }
-    }
-
-    for i in 1..n {
-        let diff = waveform[i] - waveform[i - 1];
-        let dir = diff.signum() as i32;
-        if dir != 0 && dir != last_dir && last_dir != 0 {
-            peaks.push(waveform[i - 1]);
-        }
-        last_dir = dir;
-    }
-
+    let mut signums = Vec::with_capacity(n.saturating_sub(1));
     if n > 1 {
-        peaks.push(waveform[n - 1]);
+        for i in 0..(n - 1) {
+            let diff = waveform[i + 1] - waveform[i];
+            let mut sign = diff.signum();
+            if sign == 0.0 {
+                sign = 1.0; // Assume positive signum for zero difference
+            }
+            signums.push(sign);
+        }
+    }
+
+    let mut peaks = Vec::new();
+    let n = waveform.len();
+    if n > 0 {
+        peaks.push(waveform[0]);
+        let mut last_sign = if !signums.is_empty() { signums[0] } else { 0.0 };
+        for i in 1..signums.len() {
+            if signums[i] != last_sign {
+                peaks.push(waveform[i]);
+                last_sign = signums[i];
+            }
+        }
+        if n > 1 {
+            peaks.push(waveform[n - 1]);
+        }
     }
 
     // Rainflow Counting with windowed 4 point method
