@@ -3,7 +3,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 use pyo3::prelude::*;
 
-use numpy::ndarray::{ArrayView1, Array1, Axis};
+use numpy::ndarray::{Array1, ArrayView1, Axis};
 use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::types::PyDict;
 
@@ -13,6 +13,7 @@ use ordered_float::OrderedFloat;
 type CyclesKey = (OrderedFloat<f64>, OrderedFloat<f64>);
 type CyclesMap = AHashMap<(OrderedFloat<f64>, OrderedFloat<f64>), usize>;
 
+use std::collections::VecDeque;
 use std::sync::Once;
 use tracing::{instrument, span, trace, Level};
 use tracing_subscriber::fmt;
@@ -72,19 +73,19 @@ fn peak_peak_and_rainflow_counting<'a>(
         }
     }
 
-    let mut peaks = Vec::new();
+    let mut peaks: VecDeque<f64> = VecDeque::new();
     let n = waveform.len();
     if n > 0 {
-        peaks.push(waveform[0]);
+        peaks.push_back(waveform[0]);
         let mut last_sign = if !signums.is_empty() { signums[0] } else { 0.0 };
         for i in 1..signums.len() {
             if signums[i] != last_sign {
-                peaks.push(waveform[i]);
+                peaks.push_back(waveform[i]);
                 last_sign = signums[i];
             }
         }
         if n > 1 {
-            peaks.push(waveform[n - 1]);
+            peaks.push_back(waveform[n - 1]);
         }
     }
 
@@ -93,22 +94,23 @@ fn peak_peak_and_rainflow_counting<'a>(
 
     let mut cycles: CyclesMap = CyclesMap::new();
 
-    while peaks.len() > 3 {
-        let mut i = 0;
-        let mut cycle_found = false;
-        let mut new_peaks = Vec::with_capacity(peaks.len() / 2);
+    let mut peak_stack: Vec<f64> = Vec::with_capacity(n / 2);
 
-        loop {
-            let (lower, upper) = if peaks[i] <= peaks[i + 3] {
-                (peaks[i], peaks[i + 3])
-            } else {
-                (peaks[i + 3], peaks[i])
-            };
+    'sample_loop: while peaks.len() > 0 {
+        peak_stack.push(peaks.pop_front().unwrap());
 
-            if peaks[i + 1] >= lower
-                && peaks[i + 1] <= upper
-                && peaks[i + 2] >= lower
-                && peaks[i + 2] <= upper
+        while peak_stack.len() > 3 {
+            let len = peak_stack.len();
+            let lower = peak_stack[len - 1].min(peak_stack[len - 4]);
+            let upper = peak_stack[len - 1].max(peak_stack[len - 4]);
+
+            let b = peak_stack[len - 3];
+            let c = peak_stack[len - 2];
+
+            if b >= lower
+                && b <= upper
+                && c >= lower
+                && c <= upper
             {
                 let key: CyclesKey;
 
@@ -116,18 +118,18 @@ fn peak_peak_and_rainflow_counting<'a>(
                     let from: f64;
                     let to: f64;
 
-                    if (peaks[i + 2] - peaks[i + 1]).abs() < (bin_size / 2.0) {
-                        let abs_max: f64 = if peaks[i + 1].abs() >= peaks[i + 2].abs() {
-                            peaks[i + 1]
+                    if (c - b).abs() < (bin_size / 2.0) {
+                        let abs_max: f64 = if b.abs() >= c.abs() {
+                            b
                         } else {
-                            peaks[i + 2]
+                            c
                         };
 
                         from = abs_max;
                         to = abs_max;
                     } else {
-                        from = peaks[i + 1];
-                        to = peaks[i + 2];
+                        from = b;
+                        to = c;
                     }
 
                     let quantized_from = quantize(from, bin_size);
@@ -138,40 +140,26 @@ fn peak_peak_and_rainflow_counting<'a>(
                     );
                 } else {
                     key = (
-                        OrderedFloat::from(peaks[i + 1]),
-                        OrderedFloat::from(peaks[i + 2]),
+                        OrderedFloat::from(b),
+                        OrderedFloat::from(c),
                     );
                 }
 
                 *cycles.entry(key).or_insert(0) += 1;
 
-                cycle_found = true;
-
-                new_peaks.push(peaks[i]);
-
-                i += 3;
+                let d = peak_stack.pop().unwrap();
+                peak_stack.pop();
+                peak_stack.pop();
+                peak_stack.push(d);
             } else {
-                new_peaks.push(peaks[i]);
-                i += 1;
+                continue 'sample_loop;
             }
-
-            if i >= (peaks.len() - 3) {
-                new_peaks.extend_from_slice(&peaks[i..=peaks.len() - 1]);
-                break;
-            }
-        }
-
-        if cycle_found {
-            peaks = new_peaks;
-            continue;
-        } else {
-            break;
         }
     }
 
     trace!("rainflow counting finished");
 
-    return (cycles, peaks);
+    return (cycles, peak_stack);
 }
 
 #[pyfunction]
@@ -188,7 +176,7 @@ fn rainflow<'py>(
     let bin_size = bin_size.unwrap_or(0.0);
     let waveform = waveform.as_array();
     let num_cores = rayon::current_num_threads();
-    let min_chunk_size = min_chunk_size.unwrap_or(64 * 1024); // Set your minimum chunk size
+    let min_chunk_size = min_chunk_size.unwrap_or(1024 * 1024); // Set your minimum chunk size
 
     let chunk_size = std::cmp::max(waveform.len() / num_cores, min_chunk_size);
     let chunks: Vec<_> = waveform.axis_chunks_iter(Axis(0), chunk_size).collect();
@@ -198,25 +186,35 @@ fn rainflow<'py>(
     last_peaks_vec.extend((1..chunks.len()).map(|_| None));
 
     // Parallel processing
-    let (mut total_cycles, all_peaks) = chunks
-        .par_iter()
-        .zip(last_peaks_vec.into_par_iter())
-        .map(|(chunk, last_peaks)| {
-            peak_peak_and_rainflow_counting(chunk.view(), last_peaks, bin_size)
-        })
-        .reduce(
-            || (CyclesMap::new(), Vec::new()),
-            |(mut acc_cycles, mut acc_peaks), (new_cycles, new_peaks)| {
-                for (k, v) in new_cycles {
-                    *acc_cycles.entry(k).or_insert(0) += v;
-                }
-                acc_peaks.extend(new_peaks);
-                (acc_cycles, acc_peaks)
-            },
-        );
+    let (mut total_cycles, all_peaks) = if chunks.len() > 1 {
+        chunks
+            .par_iter()
+            .zip(last_peaks_vec.into_par_iter())
+            .map(|(chunk, last_peaks)| {
+                peak_peak_and_rainflow_counting(chunk.view(), last_peaks, bin_size)
+            })
+            .reduce(
+                || (CyclesMap::new(), Vec::new()),
+                |(mut acc_cycles, mut acc_peaks), (new_cycles, new_peaks)| {
+                    for (k, v) in new_cycles {
+                        *acc_cycles.entry(k).or_insert(0) += v;
+                    }
+                    acc_peaks.extend(new_peaks);
+                    (acc_cycles, acc_peaks)
+                },
+            )
+    } else {
+        // Fallback to single-threaded if only one chunk
+        peak_peak_and_rainflow_counting(chunks[0].view(), last_peaks_vec[0], bin_size)
+    };
 
-    let (final_cycles, final_peaks) =
-        peak_peak_and_rainflow_counting(ArrayView1::from(&all_peaks), None, bin_size);
+    let (final_cycles, final_peaks) = if chunks.len() > 1 {
+        peak_peak_and_rainflow_counting(ArrayView1::from(&all_peaks), None, bin_size)
+    } else {
+        (CyclesMap::new(), all_peaks)
+    };
+
+
     for (k, v) in final_cycles {
         *total_cycles.entry(k).or_insert(0) += v;
     }
