@@ -1,8 +1,10 @@
-from typing import Annotated, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TypeAlias
 import numpy as np
 from numpy.typing import NDArray
 
-Array1D = Annotated[NDArray[np.float32], (None,)]
+# Use a simple alias Pylance understands well.
+Array1D: TypeAlias = NDArray[np.float32]
+
 
 def rainflow(
     waveform: Array1D,
@@ -11,5 +13,5 @@ def rainflow(
     min_chunk_size: int = 64 * 1024,
 ) -> Tuple[Dict[Tuple[float, float], int], Array1D]: ...
 
-def init_tracing() -> None:
-    ...
+
+def init_tracing() -> None: ...
