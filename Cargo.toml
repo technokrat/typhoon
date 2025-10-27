@@ -1,5 +1,5 @@
 [package]
-name = "typhoon"
+name = "typhoon_rainflow"
 version = "0.1.0"
 edition = "2021"
 

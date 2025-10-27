@@ -448,7 +448,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "typhoon"
+name = "typhoon_rainflow"
 version = "0.1.0"
 dependencies = [
  "ahash",

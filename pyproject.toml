@@ -19,6 +19,7 @@ dependencies = ["numpy"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+module-name = "typhoon"
 
 [project.optional-dependencies]
 test = ["nox"]
