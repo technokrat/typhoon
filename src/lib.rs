@@ -1,6 +1,7 @@
 use rayon::prelude::*;
 use tracing_subscriber::fmt::format::FmtSpan;
 
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
 use numpy::ndarray::{Array1, ArrayView1, Axis};
@@ -10,8 +11,19 @@ use pyo3::types::PyDict;
 use ahash::AHashMap;
 use ordered_float::OrderedFloat;
 
-type CyclesKey = (OrderedFloat<f64>, OrderedFloat<f64>);
-type CyclesMap = AHashMap<(OrderedFloat<f64>, OrderedFloat<f64>), usize>;
+type WaveformSampleValueType = f32;
+
+type CyclesKey = (
+    OrderedFloat<WaveformSampleValueType>,
+    OrderedFloat<WaveformSampleValueType>,
+);
+type CyclesMap = AHashMap<
+    (
+        OrderedFloat<WaveformSampleValueType>,
+        OrderedFloat<WaveformSampleValueType>,
+    ),
+    usize,
+>;
 
 use std::collections::VecDeque;
 use std::sync::Once;
@@ -35,22 +47,25 @@ fn init_tracing() {
     });
 }
 
-fn quantize(x: f64, bin_size: f64) -> f64 {
+fn quantize(
+    x: WaveformSampleValueType,
+    bin_size: WaveformSampleValueType,
+) -> WaveformSampleValueType {
     let half_bin = bin_size / 2.0;
     let shifted = x + half_bin.copysign(x); // shift by half a bin in the direction of x
     (shifted / bin_size).floor() * bin_size
 }
 
 #[instrument(fields(), skip_all)]
-fn peak_peak_and_rainflow_counting<'a>(
-    waveform: ArrayView1<f64>,
-    last_peaks: Option<ArrayView1<f64>>,
-    bin_size: f64,
-) -> (CyclesMap, Vec<f64>) {
+fn peak_peak_and_rainflow_counting(
+    waveform: ArrayView1<WaveformSampleValueType>,
+    last_peaks: Option<ArrayView1<WaveformSampleValueType>>,
+    bin_size: WaveformSampleValueType,
+) -> (CyclesMap, Vec<WaveformSampleValueType>) {
     // Peak-Peak Waveform Construction
     trace!("peak-peak waveform construction");
 
-    let waveform: Array1<f64> = if let Some(last_peaks) = last_peaks {
+    let waveform: Array1<WaveformSampleValueType> = if let Some(last_peaks) = last_peaks {
         let mut combined = last_peaks.to_owned().to_vec();
         combined.extend_from_slice(waveform.as_slice().unwrap());
         combined.into()
@@ -73,7 +88,7 @@ fn peak_peak_and_rainflow_counting<'a>(
         }
     }
 
-    let mut peaks: VecDeque<f64> = VecDeque::new();
+    let mut peaks: VecDeque<WaveformSampleValueType> = VecDeque::new();
     let n = waveform.len();
     if n > 0 {
         peaks.push_back(waveform[0]);
@@ -94,9 +109,9 @@ fn peak_peak_and_rainflow_counting<'a>(
 
     let mut cycles: CyclesMap = CyclesMap::new();
 
-    let mut peak_stack: Vec<f64> = Vec::with_capacity(n / 2);
+    let mut peak_stack: Vec<WaveformSampleValueType> = Vec::with_capacity(n / 2);
 
-    'sample_loop: while peaks.len() > 0 {
+    'sample_loop: while !peaks.is_empty() {
         peak_stack.push(peaks.pop_front().unwrap());
 
         while peak_stack.len() > 3 {
@@ -107,23 +122,16 @@ fn peak_peak_and_rainflow_counting<'a>(
             let b = peak_stack[len - 3];
             let c = peak_stack[len - 2];
 
-            if b >= lower
-                && b <= upper
-                && c >= lower
-                && c <= upper
-            {
+            if b >= lower && b <= upper && c >= lower && c <= upper {
                 let key: CyclesKey;
 
                 if bin_size > 0.0 {
-                    let from: f64;
-                    let to: f64;
+                    let from: WaveformSampleValueType;
+                    let to: WaveformSampleValueType;
 
                     if (c - b).abs() < (bin_size / 2.0) {
-                        let abs_max: f64 = if b.abs() >= c.abs() {
-                            b
-                        } else {
-                            c
-                        };
+                        let abs_max: WaveformSampleValueType =
+                            if b.abs() >= c.abs() { b } else { c };
 
                         from = abs_max;
                         to = abs_max;
@@ -139,10 +147,7 @@ fn peak_peak_and_rainflow_counting<'a>(
                         OrderedFloat::from(quantized_to),
                     );
                 } else {
-                    key = (
-                        OrderedFloat::from(b),
-                        OrderedFloat::from(c),
-                    );
+                    key = (OrderedFloat::from(b), OrderedFloat::from(c));
                 }
 
                 *cycles.entry(key).or_insert(0) += 1;
@@ -159,30 +164,64 @@ fn peak_peak_and_rainflow_counting<'a>(
 
     trace!("rainflow counting finished");
 
-    return (cycles, peak_stack);
+    (cycles, peak_stack)
 }
 
 #[pyfunction]
+#[pyo3(signature = (waveform, last_peaks=None, bin_size=0.0, min_chunk_size=64*1024))]
 fn rainflow<'py>(
     py: Python<'py>,
-    waveform: PyReadonlyArray1<f64>,
-    last_peaks: Option<PyReadonlyArray1<f64>>,
-    bin_size: Option<f64>,
+    waveform: Bound<'py, PyAny>,
+    last_peaks: Option<Bound<'py, PyAny>>,
+    bin_size: Option<WaveformSampleValueType>,
     min_chunk_size: Option<usize>,
-) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyArray1<f64>>)> {
+) -> PyResult<(
+    Bound<'py, PyDict>,
+    Bound<'py, PyArray1<WaveformSampleValueType>>,
+)> {
     let span = span!(Level::TRACE, "rainflow");
     let _enter = span.enter();
 
     let bin_size = bin_size.unwrap_or(0.0);
-    let waveform = waveform.as_array();
-    let num_cores = rayon::current_num_threads();
-    let min_chunk_size = min_chunk_size.unwrap_or(1024 * 1024); // Set your minimum chunk size
+    // Accept np.float32 or np.float64 and convert to f32 if needed
+    let waveform: Array1<WaveformSampleValueType> =
+        if let Ok(arr_f32) = waveform.extract::<PyReadonlyArray1<WaveformSampleValueType>>() {
+            arr_f32.as_array().to_owned()
+        } else if let Ok(arr_f64) = waveform.extract::<PyReadonlyArray1<f64>>() {
+            arr_f64.as_array().mapv(|x| x as WaveformSampleValueType)
+        } else {
+            return Err(PyTypeError::new_err(
+                "waveform must be a 1D numpy array of dtype float32 or float64",
+            ));
+        };
 
-    let chunk_size = std::cmp::max(waveform.len() / num_cores, min_chunk_size);
-    let chunks: Vec<_> = waveform.axis_chunks_iter(Axis(0), chunk_size).collect();
+    let num_cores = rayon::current_num_threads();
+    let min_chunk_size = min_chunk_size.unwrap_or(64 * 1024); // default consistent with Python stub
+
+    let waveform_view = waveform.view();
+    let chunk_size = std::cmp::max(waveform_view.len() / num_cores, min_chunk_size);
+    let chunks: Vec<_> = waveform_view
+        .axis_chunks_iter(Axis(0), chunk_size)
+        .collect();
 
     // Prepare last_peaks for the first chunk, None for others
-    let mut last_peaks_vec = vec![last_peaks.as_ref().map(|arr| arr.as_array())];
+    let last_peaks_owned: Option<Array1<WaveformSampleValueType>> = if let Some(lp_any) = last_peaks
+    {
+        if let Ok(arr_f32) = lp_any.extract::<PyReadonlyArray1<WaveformSampleValueType>>() {
+            Some(arr_f32.as_array().to_owned())
+        } else if let Ok(arr_f64) = lp_any.extract::<PyReadonlyArray1<f64>>() {
+            Some(arr_f64.as_array().mapv(|x| x as WaveformSampleValueType))
+        } else {
+            return Err(PyTypeError::new_err(
+                "last_peaks must be a 1D numpy array of dtype float32 or float64",
+            ));
+        }
+    } else {
+        None
+    };
+
+    let mut last_peaks_vec: Vec<Option<ArrayView1<WaveformSampleValueType>>> =
+        vec![last_peaks_owned.as_ref().map(|a| a.view())];
     last_peaks_vec.extend((1..chunks.len()).map(|_| None));
 
     // Parallel processing
@@ -213,7 +252,6 @@ fn rainflow<'py>(
     } else {
         (CyclesMap::new(), all_peaks)
     };
-
 
     for (k, v) in final_cycles {
         *total_cycles.entry(k).or_insert(0) += v;

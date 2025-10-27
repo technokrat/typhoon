@@ -1,4 +1,3 @@
-import pytest
 import typhoon
 import numpy as np
 import numpy.testing as npt
@@ -16,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 def test_rainflow():
-    waveform = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0])
-    last_peaks = np.array([])
+    waveform = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0], dtype=np.float32)
+    last_peaks = np.array([], dtype=np.float32)
     cycles, remaining_peaks = typhoon.rainflow(
         waveform=waveform,
         last_peaks=last_peaks,
@@ -37,8 +36,8 @@ def test_rainflow():
 
 
 def test_waveform_stitching():
-    waveform1 = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0])
-    waveform2 = np.array([3.0, 5.0])
+    waveform1 = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0], dtype=np.float32)
+    waveform2 = np.array([3.0, 5.0], dtype=np.float32)
 
     cycles1, remaining_peaks = typhoon.rainflow(
         waveform=waveform1,
@@ -74,7 +73,7 @@ def test_waveform_stitching():
     assert cycles_merged == {(2.0, 1.0): 2, (4.0, 3.0): 1}
 
 def test_reference_load_waveform():
-    waveform = np.array([0.0, 90.0, 30.0, 120.0, -150.0, -30.0, -60.0, 60.0, 0.0, 120.0, 60.0, 180.0, -30.0, 0.0, -120.0, 30.0])
+    waveform = np.array([0.0, 90.0, 30.0, 120.0, -150.0, -30.0, -60.0, 60.0, 0.0, 120.0, 60.0, 180.0, -30.0, 0.0, -120.0, 30.0], dtype=np.float32,)
     cycles, remaining_peaks = typhoon.rainflow(
             waveform=waveform,
             last_peaks=None,
@@ -88,10 +87,10 @@ def test_reference_load_waveform():
     assert len(remaining_peaks) - 1 == 5
 
 
-def test_benchmark_1m_samples(benchmark):
+def test_benchmark_20m_samples(benchmark):
     """Will benchmark the rainflow counting algorithm on a random waveform with 512 * 4096 samples"""
 
-    def large_waveform_rainflow_counting(waveform: np.typing.NDArray[np.float64]):
+    def large_waveform_rainflow_counting(waveform: np.typing.NDArray[np.float32]):
         cycles, remaining_peaks = typhoon.rainflow(
             waveform=waveform,
             last_peaks=None,
@@ -100,7 +99,7 @@ def test_benchmark_1m_samples(benchmark):
         )
 
     np.random.seed(42)
-    waveform = np.random.random_sample(1 * 1024 * 1024)
+    waveform = np.random.random_sample(20 * 1024 * 1024).astype(dtype=np.float32)
 
     @benchmark
     def run():
