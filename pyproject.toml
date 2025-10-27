@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 
 [project]
-name = "typhoon"
+name = "typhoon-rainflow"
 description = "Fast rainflow counting for streaming input written in Rust"
 authors = [{ email = "mw@technokrat.ch" }, { name = "Markus Wegmann" }]
 requires-python = ">=3.8"

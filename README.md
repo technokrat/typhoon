@@ -6,10 +6,10 @@ It uses a new windowed four-point counting method which can be run in parallel o
 It is therefore intended for real-time processing of load captures and serves as as crucial part of i-Spring's in-edge data processing chain.
 
 ## Installation
-Add the package `typhoon` to your Python project, e.g.
+Add the package `typhoon-rainflow` to your Python project, e.g.
 
 ```python
-poetry add typhoon
+poetry add typhoon-rainflow
 ```
 
 ## Example Usage
