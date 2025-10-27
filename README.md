@@ -1,5 +1,6 @@
 # typhoon
-[![CI](https://github.com/technokrat/typhoon/actions/workflows/CI.yml/badge.svg)](https://github.com/technokrat/typhoon/actions/workflows/CI.yml)
+[![CI](https://github.com/technokrat/typhoon/actions/workflows/CI.yml/badge.svg)](https://github.com/technokrat/typhoon/actions/workflows/CI.yml) ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/typhoon-rainflow)
+
 
 Typhoon is a rainflow counting Python module written in Rust by Markus Wegmann (mw@technokrat.ch)
 
