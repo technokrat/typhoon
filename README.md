@@ -1,4 +1,6 @@
 # typhoon
+[![CI](https://github.com/technokrat/typhoon/actions/workflows/CI.yml/badge.svg)](https://github.com/technokrat/typhoon/actions/workflows/CI.yml)
+
 Typhoon is a rainflow counting Python module written in Rust by Markus Wegmann (mw@technokrat.ch)
 
 It uses a new windowed four-point counting method which can be run in parallel on multiple cores and allows for chunk-based sample stream processing, preserving half cycles for future chunks.
