@@ -52,7 +52,7 @@ fn quantize(
     bin_size: WaveformSampleValueType,
 ) -> WaveformSampleValueType {
     let half_bin = bin_size / 2.0;
-    let shifted = x + half_bin.copysign(x); // shift by half a bin in the direction of x
+    let shifted = x + half_bin; // shift by half a bin
     (shifted / bin_size).floor() * bin_size
 }
 
