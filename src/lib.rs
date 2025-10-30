@@ -61,6 +61,7 @@ fn peak_peak_and_rainflow_counting(
     waveform: ArrayView1<WaveformSampleValueType>,
     last_peaks: Option<ArrayView1<WaveformSampleValueType>>,
     bin_size: WaveformSampleValueType,
+    threshold: WaveformSampleValueType,
 ) -> (CyclesMap, Vec<WaveformSampleValueType>) {
     // Peak-Peak Waveform Construction
     trace!("peak-peak waveform construction");
@@ -125,32 +126,35 @@ fn peak_peak_and_rainflow_counting(
             if b >= lower && b <= upper && c >= lower && c <= upper {
                 let key: CyclesKey;
 
-                if bin_size > 0.0 {
-                    let from: WaveformSampleValueType;
-                    let to: WaveformSampleValueType;
+                let difference = (c - b).abs();
+                if difference >= threshold {
+                    if bin_size > 0.0 {
+                        let from: WaveformSampleValueType;
+                        let to: WaveformSampleValueType;
 
-                    if (c - b).abs() < (bin_size / 2.0) {
-                        let abs_max: WaveformSampleValueType =
-                            if b.abs() >= c.abs() { b } else { c };
+                        if difference < (bin_size / 2.0) {
+                            let abs_max: WaveformSampleValueType =
+                                if b.abs() >= c.abs() { b } else { c };
 
-                        from = abs_max;
-                        to = abs_max;
+                            from = abs_max;
+                            to = abs_max;
+                        } else {
+                            from = b;
+                            to = c;
+                        }
+
+                        let quantized_from = quantize(from, bin_size);
+                        let quantized_to = quantize(to, bin_size);
+                        key = (
+                            OrderedFloat::from(quantized_from),
+                            OrderedFloat::from(quantized_to),
+                        );
                     } else {
-                        from = b;
-                        to = c;
+                        key = (OrderedFloat::from(b), OrderedFloat::from(c));
                     }
 
-                    let quantized_from = quantize(from, bin_size);
-                    let quantized_to = quantize(to, bin_size);
-                    key = (
-                        OrderedFloat::from(quantized_from),
-                        OrderedFloat::from(quantized_to),
-                    );
-                } else {
-                    key = (OrderedFloat::from(b), OrderedFloat::from(c));
+                    *cycles.entry(key).or_insert(0) += 1;
                 }
-
-                *cycles.entry(key).or_insert(0) += 1;
 
                 let d = peak_stack.pop().unwrap();
                 peak_stack.pop();
@@ -168,12 +172,13 @@ fn peak_peak_and_rainflow_counting(
 }
 
 #[pyfunction]
-#[pyo3(signature = (waveform, last_peaks=None, bin_size=0.0, min_chunk_size=64*1024))]
+#[pyo3(signature = (waveform, last_peaks=None, bin_size=0.0, threshold=None, min_chunk_size=64*1024))]
 fn rainflow<'py>(
     py: Python<'py>,
     waveform: Bound<'py, PyAny>,
     last_peaks: Option<Bound<'py, PyAny>>,
     bin_size: Option<WaveformSampleValueType>,
+    threshold: Option<WaveformSampleValueType>,
     min_chunk_size: Option<usize>,
 ) -> PyResult<(
     Bound<'py, PyDict>,
@@ -183,6 +188,7 @@ fn rainflow<'py>(
     let _enter = span.enter();
 
     let bin_size = bin_size.unwrap_or(0.0);
+    let threshold = threshold.unwrap_or(0.0);
     // Accept np.float32 or np.float64 and convert to f32 if needed
     let waveform: Array1<WaveformSampleValueType> =
         if let Ok(arr_f32) = waveform.extract::<PyReadonlyArray1<WaveformSampleValueType>>() {
@@ -230,7 +236,7 @@ fn rainflow<'py>(
             .par_iter()
             .zip(last_peaks_vec.into_par_iter())
             .map(|(chunk, last_peaks)| {
-                peak_peak_and_rainflow_counting(chunk.view(), last_peaks, bin_size)
+                peak_peak_and_rainflow_counting(chunk.view(), last_peaks, bin_size, threshold)
             })
             .reduce(
                 || (CyclesMap::new(), Vec::new()),
@@ -244,11 +250,11 @@ fn rainflow<'py>(
             )
     } else {
         // Fallback to single-threaded if only one chunk
-        peak_peak_and_rainflow_counting(chunks[0].view(), last_peaks_vec[0], bin_size)
+        peak_peak_and_rainflow_counting(chunks[0].view(), last_peaks_vec[0], bin_size, threshold)
     };
 
     let (final_cycles, final_peaks) = if chunks.len() > 1 {
-        peak_peak_and_rainflow_counting(ArrayView1::from(&all_peaks), None, bin_size)
+        peak_peak_and_rainflow_counting(ArrayView1::from(&all_peaks), None, bin_size, threshold)
     } else {
         (CyclesMap::new(), all_peaks)
     };

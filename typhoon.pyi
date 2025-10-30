@@ -11,6 +11,7 @@ def rainflow(
     last_peaks: Optional[Array1D] = None,
     bin_size: float = 0,
     min_chunk_size: int = 64 * 1024,
+    threshold: float = 0,
 ) -> Tuple[Dict[Tuple[float, float], int], Array1D]: ...
 
 
