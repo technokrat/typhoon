@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "typhoon_rainflow"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ahash",
  "numpy",
