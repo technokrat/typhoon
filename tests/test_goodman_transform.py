@@ -1,6 +1,6 @@
 import numpy as np
 
-from ..typhoon.typhoon import rainflow, goodman_transform
+from typhoon.typhoon import rainflow, goodman_transform
 
 
 def test_goodman_simple_symmetric_cycle():
