@@ -6,12 +6,13 @@ use pyo3::prelude::*;
 
 use numpy::ndarray::{Array1, ArrayView1, Axis};
 use numpy::{PyArray1, PyReadonlyArray1};
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use ahash::AHashMap;
 use ordered_float::OrderedFloat;
 
 type WaveformSampleValueType = f32;
+
 
 type CyclesKey = (
     OrderedFloat<WaveformSampleValueType>,
@@ -23,6 +24,13 @@ type CyclesMap = AHashMap<
         OrderedFloat<WaveformSampleValueType>,
     ),
     usize,
+>;
+type CyclesMapWithHalfCycles = AHashMap<
+    (
+        OrderedFloat<WaveformSampleValueType>,
+        OrderedFloat<WaveformSampleValueType>,
+    ),
+    WaveformSampleValueType,
 >;
 
 use std::collections::VecDeque;
@@ -171,6 +179,53 @@ fn peak_peak_and_rainflow_counting(
     (cycles, peak_stack)
 }
 
+fn goodman_transform_internal(
+    cycles: &CyclesMapWithHalfCycles,
+    m: WaveformSampleValueType,
+    m2: WaveformSampleValueType,
+) -> AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> {
+    let mut result: AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> = AHashMap::new();
+
+    let one_minus_m = 1.0 - m;
+    let one_plus_m = 1.0 + m;
+    let one_plus_m2 = 1.0 + m2;
+    let factor_low = one_plus_m / one_plus_m2;
+    let factor_high = (one_plus_m * one_plus_m) / one_plus_m2;
+
+    for ((from, to), count) in cycles.iter() {
+        let from = from.into_inner();
+        let to = to.into_inner();
+
+        let s_upper = from.max(to);
+        let s_lower = from.min(to);
+
+        let s_a = (s_upper - s_lower) / 2.0;
+        let s_m = (s_upper + s_lower) / 2.0;
+
+        let s_a_ers = if s_upper == 0.0 {
+            // R -> +inf, treat as Druckschwellbereich (R >= 1)
+            one_minus_m * s_a
+        } else {
+            let r = s_lower / s_upper;
+
+            if r >= 1.0 {
+                one_minus_m * s_a
+            } else if r <= 0.0 {
+                s_a + m * s_m
+            } else if r <= 0.5 {
+                factor_low * (s_a + m2 * s_m)
+            } else {
+                factor_high * s_a
+            }
+        };
+
+        let key = OrderedFloat::from(s_a_ers);
+        *result.entry(key).or_insert(0.0) += *count;
+    }
+
+    result
+}
+
 #[pyfunction]
 #[pyo3(signature = (waveform, last_peaks=None, bin_size=0.0, threshold=None, min_chunk_size=64*1024))]
 fn rainflow<'py>(
@@ -274,11 +329,98 @@ fn rainflow<'py>(
     Ok((py_cycles, py_peaks))
 }
 
+#[pyfunction]
+#[pyo3(signature = (cycles, m, m2=None))]
+fn goodman_transform<'py>(
+    py: Python<'py>,
+    cycles: Bound<'py, PyAny>,
+    m: WaveformSampleValueType,
+    m2: Option<WaveformSampleValueType>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let m2_value = m2.unwrap_or(m / 3.0);
+    let dict = cycles.downcast_into::<PyDict>()?;
+
+    let mut rust_cycles: CyclesMapWithHalfCycles = CyclesMapWithHalfCycles::new();
+
+    for (key, value) in dict.iter() {
+        let (s_lower, s_upper): (WaveformSampleValueType, WaveformSampleValueType) =
+            key.extract()?;
+        let count: usize = value.extract()?;
+
+        rust_cycles.insert(
+            (OrderedFloat::from(s_lower), OrderedFloat::from(s_upper)),
+            count as WaveformSampleValueType,
+        );
+    }
+
+    let transformed = goodman_transform_internal(&rust_cycles, m, m2_value);
+
+    let py_result = PyDict::new(py);
+    for (k, v) in transformed {
+        py_result.set_item(k.into_inner(), v)?;
+    }
+
+    Ok(py_result)
+}
+
+
+fn summed_histogram_internal(
+    goodman_result: &AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType>,
+) -> Vec<(WaveformSampleValueType, WaveformSampleValueType)> {
+    let mut entries: Vec<(WaveformSampleValueType, WaveformSampleValueType)> = goodman_result
+        .iter()
+        .map(|(k, v)| (k.into_inner(), *v))
+        .collect();
+
+    entries.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
+
+    let mut cumulative = 0.0_f32;
+    let mut result: Vec<(WaveformSampleValueType, WaveformSampleValueType)> = Vec::with_capacity(entries.len());
+
+    for (s_a_ers, count) in entries {
+        cumulative += count;
+        result.push((s_a_ers, cumulative));
+    }
+
+    result
+}
+
+#[pyfunction]
+fn summed_histogram<'py>(
+    py: Python<'py>,
+    hist: Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let dict = hist.downcast_into::<PyDict>()?;
+
+    let mut goodman_result: AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> =
+        AHashMap::new();
+
+    for (key, value) in dict.iter() {
+        let s_a_ers: WaveformSampleValueType = key.extract()?;
+        let count: WaveformSampleValueType = value.extract()?;
+        goodman_result.insert(OrderedFloat::from(s_a_ers), count);
+    }
+
+    let summed = summed_histogram_internal(&goodman_result);
+    let py_list = PyList::empty(py);
+    for (s_a_ers, cumulative) in summed {
+        let pair = (s_a_ers as f64, cumulative as f64);
+        py_list.append(pair)?;
+    }
+
+    Ok(py_list.into_any())
+}
+
+
+
+
 /// A Python module implemented in Rust.
 #[pymodule]
 fn typhoon(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(init_tracing, m)?)?;
     m.add_function(wrap_pyfunction!(rainflow, m)?)?;
+    m.add_function(wrap_pyfunction!(goodman_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(summed_histogram, m)?)?;
 
     Ok(())
 }

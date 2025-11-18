@@ -9,11 +9,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-#@pytest.fixture(scope="session", autouse=True)
-#def setup_tracing():
-    #typhoon.init_tracing()
-
-
 def test_rainflow():
     waveform = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0], dtype=np.float32)
     last_peaks = np.array([], dtype=np.float32)
@@ -72,18 +67,45 @@ def test_waveform_stitching():
 
     assert cycles_merged == {(2.0, 1.0): 2, (4.0, 3.0): 1}
 
+
 def test_reference_load_waveform():
-    waveform = np.array([0.0, 90.0, 30.0, 120.0, -150.0, -30.0, -60.0, 60.0, 0.0, 120.0, 60.0, 180.0, -30.0, 0.0, -120.0, 30.0], dtype=np.float32,)
+    waveform = np.array(
+        [
+            0.0,
+            90.0,
+            30.0,
+            120.0,
+            -150.0,
+            -30.0,
+            -60.0,
+            60.0,
+            0.0,
+            120.0,
+            60.0,
+            180.0,
+            -30.0,
+            0.0,
+            -120.0,
+            30.0,
+        ],
+        dtype=np.float32,
+    )
     cycles, remaining_peaks = typhoon.rainflow(
-            waveform=waveform,
-            last_peaks=None,
-            bin_size=0,
-            min_chunk_size=64 * 1024,
-        )
+        waveform=waveform,
+        last_peaks=None,
+        bin_size=0,
+        min_chunk_size=64 * 1024,
+    )
     logger.info("Reference Cycles:", cycles)
     logger.info("Reference Half-Cycles:", max(0, len(remaining_peaks) - 1))
 
-    assert cycles == {(-30.0, -60.0): 1, (90.0, 30.0): 1, (120.0, 60.0): 1, (-30.0, 0.0): 1, (60.0, 0.0): 1}
+    assert cycles == {
+        (-30.0, -60.0): 1,
+        (90.0, 30.0): 1,
+        (120.0, 60.0): 1,
+        (-30.0, 0.0): 1,
+        (60.0, 0.0): 1,
+    }
     assert len(remaining_peaks) - 1 == 5
 
 

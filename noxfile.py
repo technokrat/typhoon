@@ -21,6 +21,7 @@ def test(session):
     session.install("maturin")
     session.run("maturin", "develop")
     session.install("pytest", "numpy", "pytest-benchmark")
+    session.install("-e", ".")
     session.run("pytest", "tests")
 
 

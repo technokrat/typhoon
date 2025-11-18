@@ -2,7 +2,7 @@
 [![CI](https://github.com/technokrat/typhoon/actions/workflows/CI.yml/badge.svg)](https://github.com/technokrat/typhoon/actions/workflows/CI.yml) ![PyPI - Version](https://img.shields.io/pypi/v/typhoon-rainflow)
 
 
-Typhoon is a rainflow counting Python module written in Rust by Markus Wegmann (mw@technokrat.ch)
+Typhoon is a rainflow counting Python module written in Rust by Markus Wegmann (mw@technokrat.ch).
 
 It uses a new windowed four-point counting method which can be run in parallel on multiple cores and allows for chunk-based sample stream processing, preserving half cycles for future chunks.
 
@@ -15,55 +15,165 @@ Add the package `typhoon-rainflow` to your Python project, e.g.
 poetry add typhoon-rainflow
 ```
 
-## Example Usage
+## Python API
 
-### Single Waveform
+The Python package exposes two main namespaces:
+
+- `typhoon.typhoon`: low-level, performance‑critical functions implemented in Rust.
+- `typhoon.helper`: convenience utilities for working with the rainflow output.
+
+The top-level package re-exports everything from `typhoon.typhoon`, so you can either
 
 ```python
-import typhoon
-import numpy as np
+import typhoon            # recommended for normal use
+from typhoon import rainflow, goodman_transform
+```
 
-waveform = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0])
-last_peaks = np.array([])
-cycles, remaining_peaks = typhoon.rainflow(
-    waveform=waveform,
-    last_peaks=last_peaks,
-    bin_size=1.0,
+or
+
+```python
+from typhoon.typhoon import rainflow
+from typhoon import helper  # for helper utilities
+```
+
+### Core functions (`typhoon.typhoon`)
+
+All arguments are keyword-compatible with the examples below.
+
+- `init_tracing() -> None`
+    - Initialize verbose tracing/logging from the Rust implementation.
+    - Intended mainly for debugging and performance analysis; it writes to stdout.
+
+- `rainflow(waveform, last_peaks=None, bin_size=0.0, threshold=None, min_chunk_size=64*1024)`
+    - Perform windowed four-point rainflow counting on a 1D NumPy waveform.
+    - `waveform`: 1D `numpy.ndarray` of `float32` or `float64`.
+    - `last_peaks`: optional 1D array of peaks from the previous chunk (for streaming).
+    - `bin_size`: bin width for quantizing ranges; `0.0` disables quantization.
+    - `threshold`: minimum cycle amplitude to count; default `0.0`.
+    - `min_chunk_size`: minimum chunk size for internal parallelization.
+    - Returns `(cycles, residual_peaks)` where
+        - `cycles` is a dict `{(s_lower, s_upper): count}` and
+        - `residual_peaks` is a 1D NumPy array of remaining peaks to pass to the next call.
+
+- `goodman_transform(cycles, m, m2=None)`
+    - Apply a (piecewise) Goodman-like mean stress correction to rainflow cycles.
+    - `cycles`: mapping `{(s_lower, s_upper): count}` (e.g. first return value of `rainflow`).
+    - `m`: main slope/parameter.
+    - `m2`: optional secondary slope; defaults to `m / 3` if omitted.
+    - Returns a dict `{s_a_ers: count}` where `s_a_ers` is the equivalent range.
+
+- `summed_histogram(hist)`
+    - Build a descending cumulative histogram from the Goodman-transformed result.
+    - `hist`: mapping `{s_a_ers: count}` such as returned from `goodman_transform`.
+    - Returns a list of `(s_a_ers, cumulative_count)` pairs sorted from high to low range.
+
+### Helper utilities (`typhoon.helper`)
+
+The helper module provides convenience tools for post-processing and analysis.
+
+- `merge_cycle_counters(counters)`
+    - Merge multiple `dict`/`Counter` objects of the form `{(from, to): count}`.
+    - Useful when combining rainflow results from multiple chunks or channels.
+
+- `add_residual_half_cycles(counter, residual_peaks)`
+    - Convert the trailing `residual_peaks` from `rainflow` into half-cycles and add them to an existing counter.
+    - Each adjacent pair of peaks `(p_i, p_{i+1})` contributes `0.5` to the corresponding cycle key.
+
+- `counter_to_full_interval_df(counter, bin_size=0.1, closed="right", round_decimals=12)`
+    - Convert a sparse `(from, to): count` mapping into a dense 2D `pandas.DataFrame` over all intervals.
+    - Returns a DataFrame with a `(from, to)` `MultiIndex` of `pd.Interval` and a single `"value"` column.
+
+### Woehler curves (`typhoon.woehler`)
+
+The `typhoon.woehler` module provides helpers for evaluating S–N (Woehler) curves.
+
+Key entry points are:
+
+- `WoehlerCurveParams(sd, nd, k1, k2=None, ts=None, tn=None)`
+        - Container for the curve parameters:
+                - `sd`: fatigue strength at `nd` cycles for the reference failure probability.
+                - `nd`: reference number of cycles (e.g. 1e6).
+                - `k1`: slope in the finite-life region.
+                - `k2`: optional slope in the endurance region; derived from the Miner
+                    rule if omitted.
+                - `ts` / `tn`: optional scattering parameters controlling probability
+                    transforms of `sd` and `nd`.
+- `MinerType` enum
+        - Miner damage rule variant that determines the second slope `k2`:
+            `NONE`, `ORIGINAL`, `ELEMENTARY`, `HAIBACH`.
+- `woehler_log_space(minimum=1.0, maximum=1e8, n=101)`
+        - Convenience helper to generate a logarithmically spaced cycle axis for
+            plotting Woehler curves.
+- `woehler_loads_basic(cycles, params, miner=MinerType.NONE)`
+        - Compute a "native" Woehler curve without probability/scattering
+            transformation, but honouring the selected Miner type.
+- `woehler_loads(cycles, params, miner=MinerType.NONE, failure_probability=0.5)`
+        - Compute a probability-dependent Woehler curve using an internal
+            approximation of the normal inverse CDF.
+
+## Example Usage
+
+### Basic rainflow counting
+
+```python
+import numpy as np
+import typhoon
+
+waveform = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0], dtype=np.float32)
+
+cycles, residual_peaks = typhoon.rainflow(
+        waveform=waveform,
+        last_peaks=None,
+        bin_size=1.0,
 )
 
 print("Cycles:", cycles)
-print("Remaining Peaks:", remaining_peaks)
+print("Residual peaks:", residual_peaks)
 ```
 
-### Multiple Waveform Chunks
+### Streaming / chunked processing with helpers
 
 ```python
-waveform1 = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0])
-waveform2 = np.array([3.0, 5.0])
+from collections import Counter
 
-cycles1, remaining_peaks = typhoon.rainflow(
-    waveform=waveform1,
-    last_peaks=None,
-    bin_size=1.0,
-)
+import numpy as np
+import typhoon
+from typhoon import helper
 
-print("Waveform 1:", waveform1)
-print("Cycles 1:", cycles1)
-print("Remaining Peaks 1:", remaining_peaks)
+waveform1 = np.array([0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0], dtype=np.float32)
+waveform2 = np.array([3.0, 5.0, 4.0, 2.0], dtype=np.float32)
 
-cycles2, remaining_peaks = typhoon.rainflow(
-    waveform=waveform2,
-    last_peaks=remaining_peaks,
-    bin_size=1.0,
-)
+# First chunk
+cycles1, residual1 = typhoon.rainflow(waveform1, last_peaks=None, bin_size=1.0)
 
-print("Waveform 2:", waveform2)
-print("Cycles 2:", cycles2)
-print("Remaining Peaks 2:", remaining_peaks)
+# Second chunk, passing residual peaks from the first
+cycles2, residual2 = typhoon.rainflow(waveform2, last_peaks=residual1, bin_size=1.0)
 
-cycles_merged = Counter(cycles1) + Counter(cycles2)
+# Merge cycle counts from both chunks
+merged = helper.merge_cycle_counters([cycles1, cycles2])
 
-print("Merged Cycles:", cycles_merged)
+# Optionally add remaining half-cycles from the final residual peaks
+merged_with_residuals = helper.add_residual_half_cycles(merged, residual2)
+
+print("Merged cycles:", merged_with_residuals)
+```
+
+### Goodman transform and summed histogram
+
+```python
+import typhoon
+from typhoon import helper
+
+cycles, residual_peaks = typhoon.rainflow(waveform, last_peaks=None, bin_size=1.0)
+
+# Apply Goodman transform
+hist = typhoon.goodman_transform(cycles, m=0.3)
+
+# Summed histogram from the Goodman result
+summed = typhoon.summed_histogram(hist)
+
+print("Goodman result:", hist)
+print("Summed histogram:", summed)
 ```
 
 ## Testing

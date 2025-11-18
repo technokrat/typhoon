@@ -16,12 +16,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dynamic = ["version"]
-dependencies = ["numpy"]
+dependencies = ["numpy", "pandas"]
 
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "typhoon"
+module-name = "typhoon.typhoon"
+
 
 [project.optional-dependencies]
 test = ["nox"]
