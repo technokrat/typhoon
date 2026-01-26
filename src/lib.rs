@@ -13,7 +13,6 @@ use ordered_float::OrderedFloat;
 
 type WaveformSampleValueType = f32;
 
-
 type CyclesKey = (
     OrderedFloat<WaveformSampleValueType>,
     OrderedFloat<WaveformSampleValueType>,
@@ -184,7 +183,8 @@ fn goodman_transform_internal(
     m: WaveformSampleValueType,
     m2: WaveformSampleValueType,
 ) -> AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> {
-    let mut result: AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> = AHashMap::new();
+    let mut result: AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> =
+        AHashMap::new();
 
     let one_minus_m = 1.0 - m;
     let one_plus_m = 1.0 + m;
@@ -363,7 +363,6 @@ fn goodman_transform<'py>(
     Ok(py_result)
 }
 
-
 fn summed_histogram_internal(
     goodman_result: &AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType>,
 ) -> Vec<(WaveformSampleValueType, WaveformSampleValueType)> {
@@ -375,7 +374,8 @@ fn summed_histogram_internal(
     entries.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
 
     let mut cumulative = 0.0_f32;
-    let mut result: Vec<(WaveformSampleValueType, WaveformSampleValueType)> = Vec::with_capacity(entries.len());
+    let mut result: Vec<(WaveformSampleValueType, WaveformSampleValueType)> =
+        Vec::with_capacity(entries.len());
 
     for (s_a_ers, count) in entries {
         cumulative += count;
@@ -386,14 +386,13 @@ fn summed_histogram_internal(
 }
 
 #[pyfunction]
-fn summed_histogram<'py>(
-    py: Python<'py>,
-    hist: Bound<'py, PyAny>,
-) -> PyResult<Bound<'py, PyAny>> {
+fn summed_histogram<'py>(py: Python<'py>, hist: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
     let dict = hist.downcast_into::<PyDict>()?;
 
-    let mut goodman_result: AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> =
-        AHashMap::new();
+    let mut goodman_result: AHashMap<
+        OrderedFloat<WaveformSampleValueType>,
+        WaveformSampleValueType,
+    > = AHashMap::new();
 
     for (key, value) in dict.iter() {
         let s_a_ers: WaveformSampleValueType = key.extract()?;
@@ -410,9 +409,6 @@ fn summed_histogram<'py>(
 
     Ok(py_list.into_any())
 }
-
-
-
 
 /// A Python module implemented in Rust.
 #[pymodule]

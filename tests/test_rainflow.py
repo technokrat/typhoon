@@ -6,6 +6,8 @@ from collections import Counter
 
 import logging
 
+from typhoon import helper
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,3 +128,43 @@ def test_benchmark_20m_samples(benchmark):
     @benchmark
     def run():
         large_waveform_rainflow_counting(waveform)
+
+
+def test_benchmark_accumulation(benchmark):
+    """Will benchmark the rainflow counting accumulation on a random waveform"""
+
+    def large_waveform_rainflow_counting(
+        waveform: np.typing.NDArray[np.float32],
+        residuals: np.typing.NDArray[np.float32],
+    ):
+        cycles, remaining_peaks = typhoon.rainflow(
+            waveform=waveform,
+            last_peaks=residuals,
+            bin_size=0.001,
+            min_chunk_size=64 * 1024,
+        )
+
+        return cycles, remaining_peaks
+
+    np.random.seed(42)
+
+    @benchmark
+    def run():
+        cycles: helper.CycleCounter = Counter()
+        remaining_peaks = np.array([])
+
+        for i in range(10):
+            waveform = np.random.random_sample(10000).astype(dtype=np.float32)
+            new_cycles, remaining_peaks = large_waveform_rainflow_counting(
+                waveform, remaining_peaks
+            )
+            cycles = helper.merge_cycle_counters([cycles, new_cycles])
+
+            hist = typhoon.goodman_transform(cycles, m=0.3)
+            # summed = typhoon.summed_histogram(hist)
+
+            #helper.counter_to_full_interval_df(cycles)
+            #print(len(cycles))
+
+
+
