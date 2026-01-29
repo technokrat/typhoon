@@ -67,6 +67,56 @@ All arguments are keyword-compatible with the examples below.
     - `hist`: mapping `{s_a_ers: count}` such as returned from `goodman_transform`.
     - Returns a list of `(s_a_ers, cumulative_count)` pairs sorted from high to low range.
 
+### Stateful streaming (`RainflowContext`)
+
+If you process signals chunk-by-chunk, repeatedly calling `rainflow()` and merging dicts/Counters can become a bottleneck.
+
+`RainflowContext` keeps the accumulated cycle map and the residual `last_peaks` inside the Rust extension, so each new chunk only updates the existing state.
+
+Key methods:
+
+- `process(waveform)`: update the internal state from one waveform chunk.
+- `to_counter()`: export the accumulated cycles as a Python `collections.Counter`.
+- `to_heatmap()`: export a dense 2D NumPy array for plotting (and the corresponding bin centers).
+- `goodman_transform(m, m2=None, include_half_cycles=False)`: Goodman transform directly on the internal state.
+    - When `include_half_cycles=True`, the current residual `last_peaks` are treated as half-cycles (each adjacent peak-pair contributes `0.5`).
+- `summed_histogram(m, m2=None, include_half_cycles=False)`: convenience wrapper that returns the descending cumulative histogram (same format as `typhoon.summed_histogram`).
+
+Example:
+
+```python
+import numpy as np
+import typhoon
+
+ctx = typhoon.RainflowContext(bin_size=1.0, threshold=0.0)
+
+for chunk in chunks:  # iterable of 1D numpy arrays
+    ctx.process(chunk)
+
+# Export accumulated cycles
+cycles = ctx.to_counter()
+
+# Goodman transform (optionally including the current residual half-cycles)
+hist = ctx.goodman_transform(m=0.3, include_half_cycles=True)
+
+# Summed histogram directly from the context
+summed = ctx.summed_histogram(m=0.3, include_half_cycles=True)
+
+# Heatmap export for matplotlib
+heatmap, bins = ctx.to_heatmap()
+
+# Example plotting
+# import matplotlib.pyplot as plt
+# plt.imshow(heatmap, origin="lower")
+# plt.xticks(range(len(bins)), bins, rotation=90)
+# plt.yticks(range(len(bins)), bins)
+# plt.xlabel("to")
+# plt.ylabel("from")
+# plt.colorbar(label="count")
+# plt.tight_layout()
+# plt.show()
+```
+
 ### Helper utilities (`typhoon.helper`)
 
 The helper module provides convenience tools for post-processing and analysis.

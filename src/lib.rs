@@ -4,8 +4,8 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
-use numpy::ndarray::{Array1, ArrayView1, Axis};
-use numpy::{PyArray1, PyReadonlyArray1};
+use numpy::ndarray::{Array1, Array2, ArrayView1, Axis};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::types::{PyDict, PyList};
 
 use ahash::AHashMap;
@@ -37,6 +37,8 @@ use std::sync::Once;
 use tracing::{instrument, span, trace, Level};
 use tracing_subscriber::fmt;
 
+use std::collections::BTreeSet;
+
 static TRACING_INIT: Once = Once::new();
 
 #[pyfunction]
@@ -63,13 +65,26 @@ fn quantize(
     (shifted / bin_size).floor() * bin_size
 }
 
+fn extract_1d_f32(any: &Bound<'_, PyAny>) -> PyResult<Array1<WaveformSampleValueType>> {
+    if let Ok(arr_f32) = any.extract::<PyReadonlyArray1<WaveformSampleValueType>>() {
+        Ok(arr_f32.as_array().to_owned())
+    } else if let Ok(arr_f64) = any.extract::<PyReadonlyArray1<f64>>() {
+        Ok(arr_f64.as_array().mapv(|x| x as WaveformSampleValueType))
+    } else {
+        Err(PyTypeError::new_err(
+            "expected a 1D numpy array of dtype float32 or float64",
+        ))
+    }
+}
+
 #[instrument(fields(), skip_all)]
-fn peak_peak_and_rainflow_counting(
+fn peak_peak_and_rainflow_counting_inplace_with_cycles(
     waveform: ArrayView1<WaveformSampleValueType>,
     last_peaks: Option<ArrayView1<WaveformSampleValueType>>,
     bin_size: WaveformSampleValueType,
     threshold: WaveformSampleValueType,
-) -> (CyclesMap, Vec<WaveformSampleValueType>) {
+    cycles: &mut CyclesMap,
+) -> Vec<WaveformSampleValueType> {
     // Peak-Peak Waveform Construction
     trace!("peak-peak waveform construction");
 
@@ -114,8 +129,6 @@ fn peak_peak_and_rainflow_counting(
 
     // Rainflow Counting with windowed 4 point method
     trace!("rainflow counting");
-
-    let mut cycles: CyclesMap = CyclesMap::new();
 
     let mut peak_stack: Vec<WaveformSampleValueType> = Vec::with_capacity(n / 2);
 
@@ -175,7 +188,304 @@ fn peak_peak_and_rainflow_counting(
 
     trace!("rainflow counting finished");
 
-    (cycles, peak_stack)
+    peak_stack
+}
+
+#[instrument(fields(), skip_all)]
+fn peak_peak_and_rainflow_counting(
+    waveform: ArrayView1<WaveformSampleValueType>,
+    last_peaks: Option<ArrayView1<WaveformSampleValueType>>,
+    bin_size: WaveformSampleValueType,
+    threshold: WaveformSampleValueType,
+) -> (CyclesMap, Vec<WaveformSampleValueType>) {
+    let mut cycles: CyclesMap = CyclesMap::new();
+    let peaks = peak_peak_and_rainflow_counting_inplace_with_cycles(
+        waveform,
+        last_peaks,
+        bin_size,
+        threshold,
+        &mut cycles,
+    );
+    (cycles, peaks)
+}
+
+#[pyclass]
+struct RainflowContext {
+    bin_size: WaveformSampleValueType,
+    threshold: WaveformSampleValueType,
+    cycles: CyclesMap,
+    last_peaks: Vec<WaveformSampleValueType>,
+}
+
+#[pymethods]
+impl RainflowContext {
+    #[new]
+    #[pyo3(signature = (bin_size=0.0, threshold=0.0))]
+    fn new(bin_size: WaveformSampleValueType, threshold: WaveformSampleValueType) -> Self {
+        Self {
+            bin_size,
+            threshold,
+            cycles: CyclesMap::new(),
+            last_peaks: Vec::new(),
+        }
+    }
+
+    #[pyo3(signature = (waveform))]
+    fn process(&mut self, waveform: Bound<'_, PyAny>) -> PyResult<()> {
+        let waveform = extract_1d_f32(&waveform).map_err(|_| {
+            PyTypeError::new_err("waveform must be a 1D numpy array of dtype float32 or float64")
+        })?;
+
+        let last_peaks_view = if self.last_peaks.is_empty() {
+            None
+        } else {
+            Some(ArrayView1::from(&self.last_peaks))
+        };
+
+        let new_last_peaks = peak_peak_and_rainflow_counting_inplace_with_cycles(
+            waveform.view(),
+            last_peaks_view,
+            self.bin_size,
+            self.threshold,
+            &mut self.cycles,
+        );
+
+        self.last_peaks = new_last_peaks;
+
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.cycles.clear();
+        self.last_peaks.clear();
+    }
+
+    fn cycles_len(&self) -> usize {
+        self.cycles.len()
+    }
+
+    fn get_last_peaks<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray1<WaveformSampleValueType>> {
+        PyArray1::from_vec(py, self.last_peaks.clone())
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let py_cycles: Bound<'_, PyDict> = PyDict::new(py);
+        for ((k1, k2), v) in &self.cycles {
+            let key = (k1.into_inner(), k2.into_inner());
+            py_cycles.set_item(key, *v)?;
+        }
+        Ok(py_cycles)
+    }
+
+    fn to_counter<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dict = self.to_dict(py)?;
+        let collections = py.import("collections")?;
+        let counter_cls = collections.getattr("Counter")?;
+        let counter = counter_cls.call1((dict,))?;
+        Ok(counter)
+    }
+
+    /// Returns (heatmap, bins) where bins are the stress levels used as both axes.
+    /// When bin_size > 0, bins are a full uniform grid from min..max in steps of bin_size
+    /// (missing values are included as all-zero rows/cols).
+    fn to_heatmap<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(
+        Bound<'py, PyArray2<f64>>,
+        Bound<'py, PyArray1<WaveformSampleValueType>>,
+    )> {
+        if self.cycles.is_empty() {
+            let heatmap = Array2::<f64>::zeros((0, 0));
+            let py_heatmap = PyArray2::from_owned_array(py, heatmap);
+            let py_bins = PyArray1::from_vec(py, Vec::<WaveformSampleValueType>::new());
+            return Ok((py_heatmap, py_bins));
+        }
+
+        let mut unique: BTreeSet<OrderedFloat<WaveformSampleValueType>> = BTreeSet::new();
+        for ((from, to), _) in &self.cycles {
+            unique.insert(*from);
+            unique.insert(*to);
+        }
+
+        let bins: Vec<WaveformSampleValueType> = if self.bin_size > 0.0 {
+            let min_v = unique.first().unwrap().into_inner();
+            let max_v = unique.last().unwrap().into_inner();
+
+            let min_bin = quantize(min_v, self.bin_size) as f64;
+            let max_bin = quantize(max_v, self.bin_size) as f64;
+            let step = self.bin_size as f64;
+
+            let mut out: Vec<WaveformSampleValueType> = Vec::new();
+            let mut v = min_bin;
+            let eps = step * 1e-6;
+            while v <= max_bin + eps {
+                out.push(v as WaveformSampleValueType);
+                v += step;
+            }
+            out
+        } else {
+            unique.into_iter().map(|v| v.into_inner()).collect()
+        };
+        let n = bins.len();
+
+        let mut idx: AHashMap<OrderedFloat<WaveformSampleValueType>, usize> = AHashMap::new();
+        for (i, v) in bins.iter().enumerate() {
+            idx.insert(OrderedFloat::from(*v), i);
+        }
+
+        let mut data: Vec<f64> = vec![0.0; n * n];
+        for ((from, to), count) in &self.cycles {
+            if let (Some(&i), Some(&j)) = (idx.get(from), idx.get(to)) {
+                data[i * n + j] += *count as f64;
+            }
+        }
+
+        let heatmap = Array2::<f64>::from_shape_vec((n, n), data)
+            .map_err(|e| PyTypeError::new_err(format!("failed to build heatmap: {e}")))?;
+        let py_heatmap = PyArray2::from_owned_array(py, heatmap);
+        let py_bins = PyArray1::from_vec(py, bins);
+        Ok((py_heatmap, py_bins))
+    }
+
+    #[pyo3(signature = (m, m2=None, include_half_cycles=false))]
+    fn goodman_transform<'py>(
+        &self,
+        py: Python<'py>,
+        m: WaveformSampleValueType,
+        m2: Option<WaveformSampleValueType>,
+        include_half_cycles: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let m2_value = m2.unwrap_or(m / 3.0);
+
+        let mut rust_cycles: CyclesMapWithHalfCycles = CyclesMapWithHalfCycles::new();
+        for ((from, to), count) in &self.cycles {
+            rust_cycles.insert(
+                (
+                    OrderedFloat::from(from.into_inner()),
+                    OrderedFloat::from(to.into_inner()),
+                ),
+                *count as WaveformSampleValueType,
+            );
+        }
+
+        if include_half_cycles && self.last_peaks.len() >= 2 {
+            for i in 0..(self.last_peaks.len() - 1) {
+                let f = self.last_peaks[i];
+                let t = self.last_peaks[i + 1];
+                let difference = (t - f).abs();
+
+                if difference < self.threshold {
+                    continue;
+                }
+
+                let key = if self.bin_size > 0.0 {
+                    let from: WaveformSampleValueType;
+                    let to: WaveformSampleValueType;
+
+                    if difference < (self.bin_size / 2.0) {
+                        let abs_max: WaveformSampleValueType =
+                            if f.abs() >= t.abs() { f } else { t };
+                        from = abs_max;
+                        to = abs_max;
+                    } else {
+                        from = f;
+                        to = t;
+                    }
+
+                    (
+                        OrderedFloat::from(quantize(from, self.bin_size)),
+                        OrderedFloat::from(quantize(to, self.bin_size)),
+                    )
+                } else {
+                    (OrderedFloat::from(f), OrderedFloat::from(t))
+                };
+
+                *rust_cycles.entry(key).or_insert(0.0) += 0.5;
+            }
+        }
+
+        let transformed = goodman_transform_internal(&rust_cycles, m, m2_value);
+
+        let py_result = PyDict::new(py);
+        for (k, v) in transformed {
+            py_result.set_item(k.into_inner(), v)?;
+        }
+
+        Ok(py_result)
+    }
+
+    #[pyo3(signature = (m, m2=None, include_half_cycles=false))]
+    fn summed_histogram<'py>(
+        &self,
+        py: Python<'py>,
+        m: WaveformSampleValueType,
+        m2: Option<WaveformSampleValueType>,
+        include_half_cycles: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let m2_value = m2.unwrap_or(m / 3.0);
+
+        let mut rust_cycles: CyclesMapWithHalfCycles = CyclesMapWithHalfCycles::new();
+        for ((from, to), count) in &self.cycles {
+            rust_cycles.insert(
+                (
+                    OrderedFloat::from(from.into_inner()),
+                    OrderedFloat::from(to.into_inner()),
+                ),
+                *count as WaveformSampleValueType,
+            );
+        }
+
+        if include_half_cycles && self.last_peaks.len() >= 2 {
+            for i in 0..(self.last_peaks.len() - 1) {
+                let f = self.last_peaks[i];
+                let t = self.last_peaks[i + 1];
+                let difference = (t - f).abs();
+
+                if difference < self.threshold {
+                    continue;
+                }
+
+                let key = if self.bin_size > 0.0 {
+                    let from: WaveformSampleValueType;
+                    let to: WaveformSampleValueType;
+
+                    if difference < (self.bin_size / 2.0) {
+                        let abs_max: WaveformSampleValueType =
+                            if f.abs() >= t.abs() { f } else { t };
+                        from = abs_max;
+                        to = abs_max;
+                    } else {
+                        from = f;
+                        to = t;
+                    }
+
+                    (
+                        OrderedFloat::from(quantize(from, self.bin_size)),
+                        OrderedFloat::from(quantize(to, self.bin_size)),
+                    )
+                } else {
+                    (OrderedFloat::from(f), OrderedFloat::from(t))
+                };
+
+                *rust_cycles.entry(key).or_insert(0.0) += 0.5;
+            }
+        }
+
+        let transformed = goodman_transform_internal(&rust_cycles, m, m2_value);
+        let summed = summed_histogram_internal(&transformed);
+
+        let py_list = PyList::empty(py);
+        for (s_a_ers, cumulative) in summed {
+            let pair = (s_a_ers as f64, cumulative as f64);
+            py_list.append(pair)?;
+        }
+
+        Ok(py_list.into_any())
+    }
 }
 
 fn goodman_transform_internal(
@@ -245,16 +555,9 @@ fn rainflow<'py>(
     let bin_size = bin_size.unwrap_or(0.0);
     let threshold = threshold.unwrap_or(0.0);
     // Accept np.float32 or np.float64 and convert to f32 if needed
-    let waveform: Array1<WaveformSampleValueType> =
-        if let Ok(arr_f32) = waveform.extract::<PyReadonlyArray1<WaveformSampleValueType>>() {
-            arr_f32.as_array().to_owned()
-        } else if let Ok(arr_f64) = waveform.extract::<PyReadonlyArray1<f64>>() {
-            arr_f64.as_array().mapv(|x| x as WaveformSampleValueType)
-        } else {
-            return Err(PyTypeError::new_err(
-                "waveform must be a 1D numpy array of dtype float32 or float64",
-            ));
-        };
+    let waveform: Array1<WaveformSampleValueType> = extract_1d_f32(&waveform).map_err(|_| {
+        PyTypeError::new_err("waveform must be a 1D numpy array of dtype float32 or float64")
+    })?;
 
     let num_cores = rayon::current_num_threads();
     let min_chunk_size = min_chunk_size.unwrap_or(64 * 1024); // default consistent with Python stub
@@ -268,15 +571,9 @@ fn rainflow<'py>(
     // Prepare last_peaks for the first chunk, None for others
     let last_peaks_owned: Option<Array1<WaveformSampleValueType>> = if let Some(lp_any) = last_peaks
     {
-        if let Ok(arr_f32) = lp_any.extract::<PyReadonlyArray1<WaveformSampleValueType>>() {
-            Some(arr_f32.as_array().to_owned())
-        } else if let Ok(arr_f64) = lp_any.extract::<PyReadonlyArray1<f64>>() {
-            Some(arr_f64.as_array().mapv(|x| x as WaveformSampleValueType))
-        } else {
-            return Err(PyTypeError::new_err(
-                "last_peaks must be a 1D numpy array of dtype float32 or float64",
-            ));
-        }
+        Some(extract_1d_f32(&lp_any).map_err(|_| {
+            PyTypeError::new_err("last_peaks must be a 1D numpy array of dtype float32 or float64")
+        })?)
     } else {
         None
     };
@@ -345,11 +642,22 @@ fn goodman_transform<'py>(
     for (key, value) in dict.iter() {
         let (s_lower, s_upper): (WaveformSampleValueType, WaveformSampleValueType) =
             key.extract()?;
-        let count: usize = value.extract()?;
+        let count: WaveformSampleValueType =
+            if let Ok(c) = value.extract::<WaveformSampleValueType>() {
+                c
+            } else if let Ok(c) = value.extract::<f64>() {
+                c as WaveformSampleValueType
+            } else if let Ok(c) = value.extract::<usize>() {
+                c as WaveformSampleValueType
+            } else {
+                return Err(PyTypeError::new_err(
+                    "cycle counts must be int or float (e.g. 1 or 0.5)",
+                ));
+            };
 
         rust_cycles.insert(
             (OrderedFloat::from(s_lower), OrderedFloat::from(s_upper)),
-            count as WaveformSampleValueType,
+            count,
         );
     }
 
@@ -417,6 +725,7 @@ fn typhoon(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rainflow, m)?)?;
     m.add_function(wrap_pyfunction!(goodman_transform, m)?)?;
     m.add_function(wrap_pyfunction!(summed_histogram, m)?)?;
+    m.add_class::<RainflowContext>()?;
 
     Ok(())
 }

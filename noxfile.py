@@ -29,5 +29,5 @@ def test(session):
 def lint(session):
     """Lint Python code."""
     session.install("ruff", "black")
-    session.run("ruff", "tests")
+    session.run("ruff", "check")
     session.run("black", "--check", ".")

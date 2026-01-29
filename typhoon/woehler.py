@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Helpers for evaluating Woehler (S-N) curves.
 
 The functions in this module are a NumPy-based translation of the TypeScript
@@ -15,12 +13,16 @@ The central entry points are:
 * :func:`woehler_log_space` – helper to create a log-spaced cycle axis.
 """
 
+from __future__ import annotations
+
+import numpy as np
+
 from dataclasses import dataclass
 from enum import Enum
 from math import log10
 from typing import Iterable
 
-import numpy as np
+
 
 
 class MinerType(str, Enum):
