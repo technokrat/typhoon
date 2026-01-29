@@ -217,6 +217,52 @@ struct RainflowContext {
     last_peaks: Vec<WaveformSampleValueType>,
 }
 
+impl RainflowContext {
+    fn for_each_residual_half_cycle(&self, mut f: impl FnMut(CyclesKey)) {
+        if self.last_peaks.len() < 2 {
+            return;
+        }
+
+        for i in 0..(self.last_peaks.len() - 1) {
+            let from_peak = self.last_peaks[i];
+            let to_peak = self.last_peaks[i + 1];
+            let difference = (to_peak - from_peak).abs();
+
+            if difference < self.threshold {
+                continue;
+            }
+
+            let key: CyclesKey = if self.bin_size > 0.0 {
+                let from: WaveformSampleValueType;
+                let to: WaveformSampleValueType;
+
+                if difference < (self.bin_size / 2.0) {
+                    let abs_max: WaveformSampleValueType =
+                        if from_peak.abs() >= to_peak.abs() {
+                            from_peak
+                        } else {
+                            to_peak
+                        };
+                    from = abs_max;
+                    to = abs_max;
+                } else {
+                    from = from_peak;
+                    to = to_peak;
+                }
+
+                (
+                    OrderedFloat::from(quantize(from, self.bin_size)),
+                    OrderedFloat::from(quantize(to, self.bin_size)),
+                )
+            } else {
+                (OrderedFloat::from(from_peak), OrderedFloat::from(to_peak))
+            };
+
+            f(key);
+        }
+    }
+}
+
 #[pymethods]
 impl RainflowContext {
     #[new]
@@ -291,14 +337,28 @@ impl RainflowContext {
     /// Returns (heatmap, bins) where bins are the stress levels used as both axes.
     /// When bin_size > 0, bins are a full uniform grid from min..max in steps of bin_size
     /// (missing values are included as all-zero rows/cols).
+    #[pyo3(signature = (include_half_cycles=false))]
     fn to_heatmap<'py>(
         &self,
         py: Python<'py>,
+        include_half_cycles: bool,
     ) -> PyResult<(
         Bound<'py, PyArray2<f64>>,
         Bound<'py, PyArray1<WaveformSampleValueType>>,
     )> {
-        if self.cycles.is_empty() {
+        // Build a float-valued cycles map so we can optionally add half cycles (0.5).
+        let mut cycles: AHashMap<CyclesKey, f64> = AHashMap::new();
+        for (k, v) in &self.cycles {
+            *cycles.entry(*k).or_insert(0.0) += *v as f64;
+        }
+
+        if include_half_cycles {
+            self.for_each_residual_half_cycle(|key| {
+                *cycles.entry(key).or_insert(0.0) += 0.5;
+            });
+        }
+
+        if cycles.is_empty() {
             let heatmap = Array2::<f64>::zeros((0, 0));
             let py_heatmap = PyArray2::from_owned_array(py, heatmap);
             let py_bins = PyArray1::from_vec(py, Vec::<WaveformSampleValueType>::new());
@@ -306,7 +366,7 @@ impl RainflowContext {
         }
 
         let mut unique: BTreeSet<OrderedFloat<WaveformSampleValueType>> = BTreeSet::new();
-        for ((from, to), _) in &self.cycles {
+        for ((from, to), _) in &cycles {
             unique.insert(*from);
             unique.insert(*to);
         }
@@ -338,9 +398,9 @@ impl RainflowContext {
         }
 
         let mut data: Vec<f64> = vec![0.0; n * n];
-        for ((from, to), count) in &self.cycles {
+        for ((from, to), count) in &cycles {
             if let (Some(&i), Some(&j)) = (idx.get(from), idx.get(to)) {
-                data[i * n + j] += *count as f64;
+                data[i * n + j] += *count;
             }
         }
 
@@ -372,40 +432,10 @@ impl RainflowContext {
             );
         }
 
-        if include_half_cycles && self.last_peaks.len() >= 2 {
-            for i in 0..(self.last_peaks.len() - 1) {
-                let f = self.last_peaks[i];
-                let t = self.last_peaks[i + 1];
-                let difference = (t - f).abs();
-
-                if difference < self.threshold {
-                    continue;
-                }
-
-                let key = if self.bin_size > 0.0 {
-                    let from: WaveformSampleValueType;
-                    let to: WaveformSampleValueType;
-
-                    if difference < (self.bin_size / 2.0) {
-                        let abs_max: WaveformSampleValueType =
-                            if f.abs() >= t.abs() { f } else { t };
-                        from = abs_max;
-                        to = abs_max;
-                    } else {
-                        from = f;
-                        to = t;
-                    }
-
-                    (
-                        OrderedFloat::from(quantize(from, self.bin_size)),
-                        OrderedFloat::from(quantize(to, self.bin_size)),
-                    )
-                } else {
-                    (OrderedFloat::from(f), OrderedFloat::from(t))
-                };
-
+        if include_half_cycles {
+            self.for_each_residual_half_cycle(|key| {
                 *rust_cycles.entry(key).or_insert(0.0) += 0.5;
-            }
+            });
         }
 
         let transformed = goodman_transform_internal(&rust_cycles, m, m2_value);
@@ -439,40 +469,10 @@ impl RainflowContext {
             );
         }
 
-        if include_half_cycles && self.last_peaks.len() >= 2 {
-            for i in 0..(self.last_peaks.len() - 1) {
-                let f = self.last_peaks[i];
-                let t = self.last_peaks[i + 1];
-                let difference = (t - f).abs();
-
-                if difference < self.threshold {
-                    continue;
-                }
-
-                let key = if self.bin_size > 0.0 {
-                    let from: WaveformSampleValueType;
-                    let to: WaveformSampleValueType;
-
-                    if difference < (self.bin_size / 2.0) {
-                        let abs_max: WaveformSampleValueType =
-                            if f.abs() >= t.abs() { f } else { t };
-                        from = abs_max;
-                        to = abs_max;
-                    } else {
-                        from = f;
-                        to = t;
-                    }
-
-                    (
-                        OrderedFloat::from(quantize(from, self.bin_size)),
-                        OrderedFloat::from(quantize(to, self.bin_size)),
-                    )
-                } else {
-                    (OrderedFloat::from(f), OrderedFloat::from(t))
-                };
-
+        if include_half_cycles {
+            self.for_each_residual_half_cycle(|key| {
                 *rust_cycles.entry(key).or_insert(0.0) += 0.5;
-            }
+            });
         }
 
         let transformed = goodman_transform_internal(&rust_cycles, m, m2_value);

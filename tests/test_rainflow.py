@@ -96,6 +96,25 @@ def test_stateful_context_matches_stitching():
     npt.assert_array_equal(ctx.get_last_peaks(), np.array([0.0, 5.0], dtype=np.float32))
 
 
+def test_context_to_heatmap_with_half_cycles_includes_residuals():
+    ctx = typhoon.RainflowContext(bin_size=0.0, threshold=0.0)
+    ctx.process(np.array([0.0, 1.0], dtype=np.float32))
+
+    assert ctx.cycles_len() == 0
+
+    heatmap, bins = ctx.to_heatmap(include_half_cycles=False)
+    assert heatmap.shape == (0, 0)
+    npt.assert_array_equal(bins, np.array([], dtype=np.float32))
+
+    heatmap, bins = ctx.to_heatmap(include_half_cycles=True)
+    npt.assert_array_equal(bins, np.array([0.0, 1.0], dtype=np.float32))
+    assert heatmap.shape == (2, 2)
+    assert heatmap[0, 1] == 0.5
+    assert heatmap[0, 0] == 0.0
+    assert heatmap[1, 0] == 0.0
+    assert heatmap[1, 1] == 0.0
+
+
 def test_context_goodman_transform_with_half_cycles_matches_helper():
     waveform = np.array(
         [

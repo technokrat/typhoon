@@ -77,7 +77,8 @@ Key methods:
 
 - `process(waveform)`: update the internal state from one waveform chunk.
 - `to_counter()`: export the accumulated cycles as a Python `collections.Counter`.
-- `to_heatmap()`: export a dense 2D NumPy array for plotting (and the corresponding bin centers).
+- `to_heatmap(include_half_cycles=False)`: export a dense 2D NumPy array for plotting (and the corresponding bin centers).
+    - When `include_half_cycles=True`, the current residual `last_peaks` are treated as half-cycles (each adjacent peak-pair contributes `0.5`).
 - `goodman_transform(m, m2=None, include_half_cycles=False)`: Goodman transform directly on the internal state.
     - When `include_half_cycles=True`, the current residual `last_peaks` are treated as half-cycles (each adjacent peak-pair contributes `0.5`).
 - `summed_histogram(m, m2=None, include_half_cycles=False)`: convenience wrapper that returns the descending cumulative histogram (same format as `typhoon.summed_histogram`).
@@ -102,8 +103,8 @@ hist = ctx.goodman_transform(m=0.3, include_half_cycles=True)
 # Summed histogram directly from the context
 summed = ctx.summed_histogram(m=0.3, include_half_cycles=True)
 
-# Heatmap export for matplotlib
-heatmap, bins = ctx.to_heatmap()
+# Heatmap export for matplotlib (optionally include residual half-cycles)
+heatmap, bins = ctx.to_heatmap(include_half_cycles=True)
 
 # Example plotting
 # import matplotlib.pyplot as plt
