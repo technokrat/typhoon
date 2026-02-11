@@ -6,7 +6,7 @@ build-backend = "maturin"
 [project]
 name = "typhoon-rainflow"
 description = "Fast rainflow counting for streaming input written in Rust"
-authors = [{ email = "mw@technokrat.ch" }, { name = "Markus Wegmann" }]
+authors = [{ email = "mw@techanokrat.ch" }, { name = "Markus Wegmann" }]
 requires-python = ">=3.8"
 readme = { file = "README.md", content-type = "text/markdown" }
 classifiers = [

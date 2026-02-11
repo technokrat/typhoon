@@ -21,6 +21,8 @@ class WoehlerCurveParams:
     ts: float | None = None
     tn: float | None = None
 
+    def with_predamage(self, d_predamage: float, q: float | None = ...) -> WoehlerCurveParams: ...
+
 def woehler_loads_basic(
     cycles: Iterable[float] | np.ndarray,
     params: WoehlerCurveParams,

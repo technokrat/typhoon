@@ -34,6 +34,22 @@ def summed_histogram(
     ...
 
 
+class MinerDamageMode:
+    Original: MinerDamageMode
+    Modified: MinerDamageMode
+
+
+def fkm_miner_damage(
+    goodman_result: Mapping[float, float] | Mapping[float, int],
+    n_d: float,
+    sigma_d: float,
+    k: float,
+    q: float | None = ...,
+    mode: MinerDamageMode = ...,
+) -> float:
+    ...
+
+
 class RainflowContext:
     def __init__(self, bin_size: float = ..., threshold: float = ...) -> None: ...
 
@@ -63,3 +79,15 @@ class RainflowContext:
         m2: float | None = ...,
         include_half_cycles: bool = ...,
     ) -> list[tuple[float, float]]: ...
+
+    def fkm_miner_damage(
+        self,
+        m: float,
+        n_d: float,
+        sigma_d: float,
+        k: float,
+        m2: float | None = ...,
+        include_half_cycles: bool = ...,
+        q: float | None = ...,
+        mode: MinerDamageMode = ...,
+    ) -> float: ...

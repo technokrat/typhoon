@@ -27,9 +27,9 @@ from typing import Iterable
 
 class MinerType(str, Enum):
     NONE = "none"
-    ORIGINAL = "original"
-    ELEMENTARY = "elementary"
-    HAIBACH = "haibach"
+    ORIGINAL = "original" # no damage below Dauerfestigkeit
+    ELEMENTARY = "elementary" # full damage below Dauerfestigkeit (as if woehler slope would extend below Dauerfestigkeit)
+    HAIBACH = "haibach" # alias für modified Miner Rule where damage curve below Dauerfestigkeit has a modified slope with q = k - 1
 
 
 @dataclass
@@ -40,6 +40,48 @@ class WoehlerCurveParams:
     k2: float | None = None
     ts: float | None = None
     tn: float | None = None
+
+    def with_predamage(self, d_predamage: float, q: float | None = None) -> WoehlerCurveParams:
+        """Return new curve params modified by pre-damage.
+
+        Implements the FKM pre-damage modification:
+
+        - sd_damaged = sd * (1 - D_predamage)^(1/q)
+        - nd_damaged = nd * (sd_damaged / sd)^(-(k - q))
+
+        Here k is `k1`.
+        """
+
+        if not np.isfinite(d_predamage):
+            raise ValueError("D_predamage must be finite")
+        if d_predamage < 0.0 or d_predamage >= 1.0:
+            raise ValueError("D_predamage must be in [0, 1)")
+
+        if not np.isfinite(self.sd) or self.sd <= 0.0:
+            raise ValueError("sd must be a positive finite number")
+        if not np.isfinite(self.nd) or self.nd <= 0.0:
+            raise ValueError("nd must be a positive finite number")
+        if not np.isfinite(self.k1) or self.k1 <= 0.0:
+            raise ValueError("k1 must be a positive finite number")
+
+        q_value = (self.k1 - 1.0) if q is None else float(q)
+        if not np.isfinite(q_value) or q_value <= 0.0:
+            raise ValueError("q must be a positive finite number")
+
+        sd_damaged = float(self.sd) * (1.0 - float(d_predamage)) ** (1.0 / q_value)
+
+        ratio = sd_damaged / float(self.sd)
+        exponent = -(float(self.k1) - q_value)
+        nd_damaged = float(self.nd) * (ratio**exponent)
+
+        return WoehlerCurveParams(
+            sd=sd_damaged,
+            nd=nd_damaged,
+            k1=self.k1,
+            k2=self.k2,
+            ts=self.ts,
+            tn=self.tn,
+        )
 
 
 _DEFAULT_FAILURE_PROBABILITY = 0.5

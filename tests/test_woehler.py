@@ -54,3 +54,17 @@ def test_woehler_miner_type_effect() -> None:
     # Different Miner type should generally lead to different loads once the
     # second slope becomes relevant (here for the higher cycle counts).
     assert not np.allclose(loads_none, loads_haibach)
+
+
+def test_woehler_predamage_params() -> None:
+    params = WoehlerCurveParams(sd=100.0, nd=1.0e6, k1=5.0)
+
+    damaged = params.with_predamage(d_predamage=0.2)
+
+    # Default q is (k1 - 1) = 4
+    expected_sd = 100.0 * (1.0 - 0.2) ** (1.0 / 4.0)
+    expected_nd = 1.0e6 * (expected_sd / 100.0) ** (-(5.0 - 4.0))
+
+    assert np.isclose(damaged.sd, expected_sd)
+    assert np.isclose(damaged.nd, expected_nd)
+    assert damaged.k1 == params.k1

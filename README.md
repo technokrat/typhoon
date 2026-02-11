@@ -67,6 +67,17 @@ All arguments are keyword-compatible with the examples below.
     - `hist`: mapping `{s_a_ers: count}` such as returned from `goodman_transform`.
     - Returns a list of `(s_a_ers, cumulative_count)` pairs sorted from high to low range.
 
+- `fkm_miner_damage(goodman_result, n_d, sigma_d, k, q=None, mode=MinerDamageMode.Modified) -> float`
+    - Compute a Miner damage coefficient $D$ from a Goodman-transformed collective.
+    - `goodman_result`: mapping `{sigma_a: count}` as returned from `goodman_transform`.
+    - `n_d`: $N_D$ (cycles allowed at endurance limit).
+    - `sigma_d`: $\sigma_D$ (endurance limit level).
+    - `k`: Woehler exponent $k$.
+    - `q`: exponent modifier for amplitudes below $\sigma_D$; defaults to `k - 1`.
+    - `mode`:
+        - `MinerDamageMode.Modified` (default): returns $D_{MM}$ (FKM modified Miner).
+        - `MinerDamageMode.Original`: returns $D_{OM}$ (original Miner, ignoring amplitudes below $\sigma_D$).
+
 ### Stateful streaming (`RainflowContext`)
 
 If you process signals chunk-by-chunk, repeatedly calling `rainflow()` and merging dicts/Counters can become a bottleneck.
@@ -82,6 +93,7 @@ Key methods:
 - `goodman_transform(m, m2=None, include_half_cycles=False)`: Goodman transform directly on the internal state.
     - When `include_half_cycles=True`, the current residual `last_peaks` are treated as half-cycles (each adjacent peak-pair contributes `0.5`).
 - `summed_histogram(m, m2=None, include_half_cycles=False)`: convenience wrapper that returns the descending cumulative histogram (same format as `typhoon.summed_histogram`).
+- `fkm_miner_damage(m, n_d, sigma_d, k, m2=None, include_half_cycles=False, q=None, mode=MinerDamageMode.Modified)`: compute Miner damage directly from the internal accumulated cycles.
 
 Example:
 
@@ -149,6 +161,12 @@ Key entry points are:
                     rule if omitted.
                 - `ts` / `tn`: optional scattering parameters controlling probability
                     transforms of `sd` and `nd`.
+- `WoehlerCurveParams.with_predamage(d_predamage, q=None)`
+        - Returns a new set of curve parameters modified by a pre-damage value $D_{predamage}$.
+        - Uses the FKM-style transformation:
+            - $\sigma_{D,dam} = \sigma_D\,(1-D_{predamage})^{1/q}$
+            - $N_{D,dam} = N_D\,(\sigma_{D,dam}/\sigma_D)^{-(k-q)}$ with $k=k_1$
+        - If `q` is omitted, defaults to `k1 - 1`.
 - `MinerType` enum
         - Miner damage rule variant that determines the second slope `k2`:
             `NONE`, `ORIGINAL`, `ELEMENTARY`, `HAIBACH`.
@@ -225,6 +243,30 @@ summed = typhoon.summed_histogram(hist)
 
 print("Goodman result:", hist)
 print("Summed histogram:", summed)
+```
+
+### FKM Modified Miner damage (from Goodman result)
+
+```python
+import typhoon
+
+# hist is the Goodman-transformed collective: {sigma_a: count}
+hist = typhoon.goodman_transform(cycles, m=0.3)
+
+# FKM modified Miner damage (D_MM)
+d_mm = typhoon.fkm_miner_damage(hist, n_d=1e6, sigma_d=100.0, k=5.0)
+
+# Original Miner damage (D_OM) only (ignore amplitudes below sigma_d)
+d_om = typhoon.fkm_miner_damage(
+    hist,
+    n_d=1e6,
+    sigma_d=100.0,
+    k=5.0,
+    mode=typhoon.MinerDamageMode.Original,
+)
+
+print("D_MM:", d_mm)
+print("D_OM:", d_om)
 ```
 
 ## Testing

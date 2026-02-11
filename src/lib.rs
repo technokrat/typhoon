@@ -41,6 +41,13 @@ use std::collections::BTreeSet;
 
 static TRACING_INIT: Once = Once::new();
 
+#[pyclass(eq, eq_int)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MinerDamageMode {
+    Original,
+    Modified,
+}
+
 #[pyfunction]
 fn init_tracing() {
     TRACING_INIT.call_once(|| {
@@ -261,6 +268,36 @@ impl RainflowContext {
             f(key);
         }
     }
+
+    fn cycles_with_optional_half_cycles(
+        &self,
+        include_half_cycles: bool,
+    ) -> CyclesMapWithHalfCycles {
+        let mut rust_cycles: CyclesMapWithHalfCycles = CyclesMapWithHalfCycles::new();
+
+        for (key, count) in &self.cycles {
+            rust_cycles.insert(*key, *count as WaveformSampleValueType);
+        }
+
+        if include_half_cycles {
+            self.for_each_residual_half_cycle(|key| {
+                *rust_cycles.entry(key).or_insert(0.0) += 0.5;
+            });
+        }
+
+        rust_cycles
+    }
+
+    fn goodman_transform_map(
+        &self,
+        m: WaveformSampleValueType,
+        m2: Option<WaveformSampleValueType>,
+        include_half_cycles: bool,
+    ) -> AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> {
+        let m2_value = m2.unwrap_or(m / 3.0);
+        let rust_cycles = self.cycles_with_optional_half_cycles(include_half_cycles);
+        goodman_transform_internal(&rust_cycles, m, m2_value)
+    }
 }
 
 #[pymethods]
@@ -419,26 +456,7 @@ impl RainflowContext {
         m2: Option<WaveformSampleValueType>,
         include_half_cycles: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let m2_value = m2.unwrap_or(m / 3.0);
-
-        let mut rust_cycles: CyclesMapWithHalfCycles = CyclesMapWithHalfCycles::new();
-        for ((from, to), count) in &self.cycles {
-            rust_cycles.insert(
-                (
-                    OrderedFloat::from(from.into_inner()),
-                    OrderedFloat::from(to.into_inner()),
-                ),
-                *count as WaveformSampleValueType,
-            );
-        }
-
-        if include_half_cycles {
-            self.for_each_residual_half_cycle(|key| {
-                *rust_cycles.entry(key).or_insert(0.0) += 0.5;
-            });
-        }
-
-        let transformed = goodman_transform_internal(&rust_cycles, m, m2_value);
+        let transformed = self.goodman_transform_map(m, m2, include_half_cycles);
 
         let py_result = PyDict::new(py);
         for (k, v) in transformed {
@@ -456,26 +474,7 @@ impl RainflowContext {
         m2: Option<WaveformSampleValueType>,
         include_half_cycles: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let m2_value = m2.unwrap_or(m / 3.0);
-
-        let mut rust_cycles: CyclesMapWithHalfCycles = CyclesMapWithHalfCycles::new();
-        for ((from, to), count) in &self.cycles {
-            rust_cycles.insert(
-                (
-                    OrderedFloat::from(from.into_inner()),
-                    OrderedFloat::from(to.into_inner()),
-                ),
-                *count as WaveformSampleValueType,
-            );
-        }
-
-        if include_half_cycles {
-            self.for_each_residual_half_cycle(|key| {
-                *rust_cycles.entry(key).or_insert(0.0) += 0.5;
-            });
-        }
-
-        let transformed = goodman_transform_internal(&rust_cycles, m, m2_value);
+        let transformed = self.goodman_transform_map(m, m2, include_half_cycles);
         let summed = summed_histogram_internal(&transformed);
 
         let py_list = PyList::empty(py);
@@ -485,6 +484,22 @@ impl RainflowContext {
         }
 
         Ok(py_list.into_any())
+    }
+
+    #[pyo3(signature = (m, n_d, sigma_d, k, m2=None, include_half_cycles=false, q=None, mode=MinerDamageMode::Modified))]
+    fn fkm_miner_damage(
+        &self,
+        m: WaveformSampleValueType,
+        n_d: f64,
+        sigma_d: f64,
+        k: f64,
+        m2: Option<WaveformSampleValueType>,
+        include_half_cycles: bool,
+        q: Option<f64>,
+        mode: MinerDamageMode,
+    ) -> PyResult<f64> {
+        let transformed = self.goodman_transform_map(m, m2, include_half_cycles);
+        fkm_miner_damage_from_goodman_internal(&transformed, n_d, sigma_d, k, q, mode)
     }
 }
 
@@ -693,6 +708,136 @@ fn summed_histogram_internal(
     result
 }
 
+fn fkm_miner_damage_from_goodman_internal(
+    goodman_result: &AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType>,
+    n_d: f64,
+    sigma_d: f64,
+    k: f64,
+    q: Option<f64>,
+    mode: MinerDamageMode,
+) -> PyResult<f64> {
+    let (n_d, sigma_d, k, k_plus_q) = fkm_modified_miner_params(n_d, sigma_d, k, q)?;
+
+    let mut damage = 0.0_f64;
+    for (sigma_a, count) in goodman_result.iter() {
+        let sigma_a = sigma_a.into_inner() as f64;
+        let count = *count as f64;
+        fkm_modified_miner_accumulate(
+            &mut damage,
+            sigma_a,
+            count,
+            n_d,
+            sigma_d,
+            k,
+            k_plus_q,
+            mode,
+        )?;
+    }
+
+    Ok(damage)
+}
+
+fn fkm_miner_damage_from_goodman_pydict(
+    dict: &Bound<'_, PyDict>,
+    n_d: f64,
+    sigma_d: f64,
+    k: f64,
+    q: Option<f64>,
+    mode: MinerDamageMode,
+) -> PyResult<f64> {
+    let (n_d, sigma_d, k, k_plus_q) = fkm_modified_miner_params(n_d, sigma_d, k, q)?;
+
+    let mut damage = 0.0_f64;
+    for (key, value) in dict.iter() {
+        let sigma_a: f64 = key.extract()?;
+        let count: f64 = if let Ok(c) = value.extract::<f64>() {
+            c
+        } else if let Ok(c) = value.extract::<WaveformSampleValueType>() {
+            c as f64
+        } else if let Ok(c) = value.extract::<usize>() {
+            c as f64
+        } else {
+            return Err(PyTypeError::new_err(
+                "goodman cycle counts must be int or float",
+            ));
+        };
+
+        fkm_modified_miner_accumulate(
+            &mut damage,
+            sigma_a,
+            count,
+            n_d,
+            sigma_d,
+            k,
+            k_plus_q,
+            mode,
+        )?;
+    }
+
+    Ok(damage)
+}
+
+fn fkm_modified_miner_params(
+    n_d: f64,
+    sigma_d: f64,
+    k: f64,
+    q: Option<f64>,
+) -> PyResult<(f64, f64, f64, f64)> {
+    if !n_d.is_finite() || n_d <= 0.0 {
+        return Err(PyTypeError::new_err("N_D must be a positive finite number"));
+    }
+    if !sigma_d.is_finite() || sigma_d <= 0.0 {
+        return Err(PyTypeError::new_err(
+            "sigma_D must be a positive finite number",
+        ));
+    }
+    if !k.is_finite() || k <= 0.0 {
+        return Err(PyTypeError::new_err("k must be a positive finite number"));
+    }
+
+    let q = q.unwrap_or(k - 1.0);
+    if !q.is_finite() {
+        return Err(PyTypeError::new_err("q must be a finite number"));
+    }
+    let k_plus_q = k + q;
+    if !k_plus_q.is_finite() || k_plus_q <= 0.0 {
+        return Err(PyTypeError::new_err("k + q must be positive"));
+    }
+
+    Ok((n_d, sigma_d, k, k_plus_q))
+}
+
+fn fkm_modified_miner_accumulate(
+    damage: &mut f64,
+    sigma_a: f64,
+    count: f64,
+    n_d: f64,
+    sigma_d: f64,
+    k: f64,
+    k_plus_q: f64,
+    mode: MinerDamageMode,
+) -> PyResult<()> {
+    if !sigma_a.is_finite() || sigma_a < 0.0 {
+        return Err(PyTypeError::new_err(
+            "goodman amplitudes must be finite and >= 0",
+        ));
+    }
+    if !count.is_finite() || count < 0.0 {
+        return Err(PyTypeError::new_err(
+            "goodman cycle counts must be finite and >= 0",
+        ));
+    }
+
+    if mode == MinerDamageMode::Original && sigma_a < sigma_d {
+        return Ok(());
+    }
+
+    let ratio = sigma_a / sigma_d;
+    let exp = if sigma_a >= sigma_d { k } else { k_plus_q };
+    *damage += (count / n_d) * ratio.powf(exp);
+    Ok(())
+}
+
 #[pyfunction]
 fn summed_histogram<'py>(py: Python<'py>, hist: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
     let dict = hist.downcast_into::<PyDict>()?;
@@ -718,6 +863,21 @@ fn summed_histogram<'py>(py: Python<'py>, hist: Bound<'py, PyAny>) -> PyResult<B
     Ok(py_list.into_any())
 }
 
+#[pyfunction]
+#[pyo3(signature = (goodman_result, n_d, sigma_d, k, q=None, mode=MinerDamageMode::Modified))]
+fn fkm_miner_damage<'py>(
+    _py: Python<'py>,
+    goodman_result: Bound<'py, PyAny>,
+    n_d: f64,
+    sigma_d: f64,
+    k: f64,
+    q: Option<f64>,
+    mode: MinerDamageMode,
+) -> PyResult<f64> {
+    let dict = goodman_result.downcast_into::<PyDict>()?;
+    fkm_miner_damage_from_goodman_pydict(&dict, n_d, sigma_d, k, q, mode)
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 fn typhoon(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -725,6 +885,8 @@ fn typhoon(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rainflow, m)?)?;
     m.add_function(wrap_pyfunction!(goodman_transform, m)?)?;
     m.add_function(wrap_pyfunction!(summed_histogram, m)?)?;
+    m.add_function(wrap_pyfunction!(fkm_miner_damage, m)?)?;
+    m.add_class::<MinerDamageMode>()?;
     m.add_class::<RainflowContext>()?;
 
     Ok(())
