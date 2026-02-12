@@ -23,3 +23,12 @@ def test_fkm_miner_damage_collective():
         mode=MinerDamageMode.Original,
     )
     assert np.isclose(d_om, 0.0037520384, rtol=1e-12)
+
+    d_km = fkm_miner_damage(
+        goodman,
+        n_d=1e6,
+        sigma_d=100.0,
+        k=5.0,
+        mode=MinerDamageMode.KonsequentMiner,
+    )
+    assert np.isclose(d_km, 4.57833531e-3, rtol=2e-4)

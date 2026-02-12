@@ -46,6 +46,8 @@ static TRACING_INIT: Once = Once::new();
 enum MinerDamageMode {
     Original,
     Modified,
+    KonsequentMiner,
+    ElementarMiner,
 }
 
 #[pyfunction]
@@ -244,12 +246,11 @@ impl RainflowContext {
                 let to: WaveformSampleValueType;
 
                 if difference < (self.bin_size / 2.0) {
-                    let abs_max: WaveformSampleValueType =
-                        if from_peak.abs() >= to_peak.abs() {
-                            from_peak
-                        } else {
-                            to_peak
-                        };
+                    let abs_max: WaveformSampleValueType = if from_peak.abs() >= to_peak.abs() {
+                        from_peak
+                    } else {
+                        to_peak
+                    };
                     from = abs_max;
                     to = abs_max;
                 } else {
@@ -716,6 +717,16 @@ fn fkm_miner_damage_from_goodman_internal(
     q: Option<f64>,
     mode: MinerDamageMode,
 ) -> PyResult<f64> {
+    if mode == MinerDamageMode::KonsequentMiner {
+        return fkm_konsequent_miner_damage_from_goodman_internal(
+            goodman_result,
+            n_d,
+            sigma_d,
+            k,
+            q,
+        );
+    }
+
     let (n_d, sigma_d, k, k_plus_q) = fkm_modified_miner_params(n_d, sigma_d, k, q)?;
 
     let mut damage = 0.0_f64;
@@ -745,36 +756,124 @@ fn fkm_miner_damage_from_goodman_pydict(
     q: Option<f64>,
     mode: MinerDamageMode,
 ) -> PyResult<f64> {
-    let (n_d, sigma_d, k, k_plus_q) = fkm_modified_miner_params(n_d, sigma_d, k, q)?;
+    let goodman_result = fkm_parse_goodman_pydict(dict)?;
+    fkm_miner_damage_from_goodman_internal(&goodman_result, n_d, sigma_d, k, q, mode)
+}
 
-    let mut damage = 0.0_f64;
+fn fkm_elementary_damage_increment(
+    sigma_a: f64,
+    count: f64,
+    n_d: f64,
+    sigma_d: f64,
+    k: f64,
+) -> PyResult<f64> {
+    fkm_validate_goodman_inputs(sigma_a, count)?;
+    Ok(fkm_damage_increment(sigma_a, count, n_d, sigma_d, k))
+}
+
+fn fkm_parse_goodman_pydict(
+    dict: &Bound<'_, PyDict>,
+) -> PyResult<AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType>> {
+    let mut goodman_result: AHashMap<
+        OrderedFloat<WaveformSampleValueType>,
+        WaveformSampleValueType,
+    > = AHashMap::new();
+
     for (key, value) in dict.iter() {
-        let sigma_a: f64 = key.extract()?;
-        let count: f64 = if let Ok(c) = value.extract::<f64>() {
-            c
+        let sigma_a: WaveformSampleValueType = key.extract()?;
+        let count: WaveformSampleValueType = if let Ok(c) = value.extract::<f64>() {
+            c as WaveformSampleValueType
         } else if let Ok(c) = value.extract::<WaveformSampleValueType>() {
-            c as f64
+            c
         } else if let Ok(c) = value.extract::<usize>() {
-            c as f64
+            c as WaveformSampleValueType
         } else {
             return Err(PyTypeError::new_err(
                 "goodman cycle counts must be int or float",
             ));
         };
 
-        fkm_modified_miner_accumulate(
-            &mut damage,
-            sigma_a,
-            count,
-            n_d,
-            sigma_d,
-            k,
-            k_plus_q,
-            mode,
-        )?;
+        goodman_result.insert(OrderedFloat::from(sigma_a), count);
     }
 
-    Ok(damage)
+    Ok(goodman_result)
+}
+
+fn fkm_konsequent_miner_damage_from_goodman_internal(
+    goodman_result: &AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType>,
+    n_d: f64,
+    sigma_d: f64,
+    k: f64,
+    q: Option<f64>,
+) -> PyResult<f64> {
+    let (n_d, sigma_d, k, _) = fkm_modified_miner_params(n_d, sigma_d, k, q)?;
+
+    let q_value = q.unwrap_or(k - 1.0);
+    if !q_value.is_finite() || q_value <= 0.0 {
+        return Err(PyTypeError::new_err(
+            "q must be a positive finite number for KonsequentMiner",
+        ));
+    }
+
+    let mut entries: Vec<(f64, f64)> = Vec::with_capacity(goodman_result.len() + 1);
+    let mut has_zero = false;
+
+    for (sigma_a, count) in goodman_result.iter() {
+        let sigma_a = sigma_a.into_inner() as f64;
+        let count = *count as f64;
+
+        if sigma_a == 0.0 {
+            has_zero = true;
+        }
+
+        entries.push((sigma_a, count));
+    }
+
+    if !has_zero {
+        entries.push((0.0, 0.0));
+    }
+
+    entries.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap());
+
+    let mut d_sum = 0.0_f64;
+    let mut d_min_prev = 0.0_f64;
+    let mut w = 0.0_f64;
+
+    for (sigma_a, count) in entries {
+        let d_sum_prev = d_sum;
+        d_sum += fkm_elementary_damage_increment(sigma_a, count, n_d, sigma_d, k)?;
+        if d_sum >= 1.0 {
+            break;
+        }
+
+        if sigma_a < sigma_d {
+            let ratio = if sigma_a == 0.0 {
+                0.0
+            } else {
+                sigma_a / sigma_d
+            };
+            let d_min = 1.0 - ratio.powf(q_value);
+            let mut delta = d_min - d_min_prev;
+            if delta < 0.0 {
+                delta = 0.0;
+            }
+
+            if d_sum_prev <= 0.0 {
+                return Ok(0.0);
+            }
+
+            w += delta / d_sum_prev;
+            d_min_prev = d_min;
+        }
+    }
+
+    if w <= 0.0 || !w.is_finite() {
+        return Err(PyTypeError::new_err(
+            "KonsequentMiner failed to compute damage",
+        ));
+    }
+
+    Ok(1.0 / w)
 }
 
 fn fkm_modified_miner_params(
@@ -817,6 +916,24 @@ fn fkm_modified_miner_accumulate(
     k_plus_q: f64,
     mode: MinerDamageMode,
 ) -> PyResult<()> {
+    fkm_validate_goodman_inputs(sigma_a, count)?;
+
+    if mode == MinerDamageMode::Original && sigma_a < sigma_d {
+        return Ok(());
+    }
+
+    let exp = if mode == MinerDamageMode::ElementarMiner {
+        k
+    } else if sigma_a >= sigma_d {
+        k
+    } else {
+        k_plus_q
+    };
+    *damage += fkm_damage_increment(sigma_a, count, n_d, sigma_d, exp);
+    Ok(())
+}
+
+fn fkm_validate_goodman_inputs(sigma_a: f64, count: f64) -> PyResult<()> {
     if !sigma_a.is_finite() || sigma_a < 0.0 {
         return Err(PyTypeError::new_err(
             "goodman amplitudes must be finite and >= 0",
@@ -827,15 +944,16 @@ fn fkm_modified_miner_accumulate(
             "goodman cycle counts must be finite and >= 0",
         ));
     }
+    Ok(())
+}
 
-    if mode == MinerDamageMode::Original && sigma_a < sigma_d {
-        return Ok(());
+fn fkm_damage_increment(sigma_a: f64, count: f64, n_d: f64, sigma_d: f64, exp: f64) -> f64 {
+    if sigma_a == 0.0 || count == 0.0 {
+        return 0.0;
     }
 
     let ratio = sigma_a / sigma_d;
-    let exp = if sigma_a >= sigma_d { k } else { k_plus_q };
-    *damage += (count / n_d) * ratio.powf(exp);
-    Ok(())
+    (count / n_d) * ratio.powf(exp)
 }
 
 #[pyfunction]

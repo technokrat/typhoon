@@ -37,6 +37,8 @@ def summed_histogram(
 class MinerDamageMode:
     Original: MinerDamageMode
     Modified: MinerDamageMode
+    KonsequentMiner: MinerDamageMode
+    ElementarMiner: MinerDamageMode
 
 
 def fkm_miner_damage(
