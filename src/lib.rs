@@ -922,9 +922,7 @@ fn fkm_modified_miner_accumulate(
         return Ok(());
     }
 
-    let exp = if mode == MinerDamageMode::ElementarMiner {
-        k
-    } else if sigma_a >= sigma_d {
+    let exp = if mode == MinerDamageMode::ElementarMiner || sigma_a >= sigma_d {
         k
     } else {
         k_plus_q
