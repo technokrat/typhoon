@@ -294,10 +294,11 @@ impl RainflowContext {
         m: WaveformSampleValueType,
         m2: Option<WaveformSampleValueType>,
         include_half_cycles: bool,
+        bin_size_compensation: WaveformSampleValueType,
     ) -> AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> {
         let m2_value = m2.unwrap_or(m / 3.0);
         let rust_cycles = self.cycles_with_optional_half_cycles(include_half_cycles);
-        goodman_transform_internal(&rust_cycles, m, m2_value)
+        goodman_transform_internal(&rust_cycles, m, m2_value, bin_size_compensation)
     }
 }
 
@@ -449,15 +450,18 @@ impl RainflowContext {
         Ok((py_heatmap, py_bins))
     }
 
-    #[pyo3(signature = (m, m2=None, include_half_cycles=false))]
+    #[pyo3(signature = (m, m2=None, include_half_cycles=false, bin_size_compensation=0.0))]
     fn goodman_transform<'py>(
         &self,
         py: Python<'py>,
         m: WaveformSampleValueType,
         m2: Option<WaveformSampleValueType>,
         include_half_cycles: bool,
+        bin_size_compensation: WaveformSampleValueType,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let transformed = self.goodman_transform_map(m, m2, include_half_cycles);
+        validate_bin_size_compensation(bin_size_compensation)?;
+        let transformed =
+            self.goodman_transform_map(m, m2, include_half_cycles, bin_size_compensation);
 
         let py_result = PyDict::new(py);
         for (k, v) in transformed {
@@ -467,15 +471,18 @@ impl RainflowContext {
         Ok(py_result)
     }
 
-    #[pyo3(signature = (m, m2=None, include_half_cycles=false))]
+    #[pyo3(signature = (m, m2=None, include_half_cycles=false, bin_size_compensation=0.0))]
     fn summed_histogram<'py>(
         &self,
         py: Python<'py>,
         m: WaveformSampleValueType,
         m2: Option<WaveformSampleValueType>,
         include_half_cycles: bool,
+        bin_size_compensation: WaveformSampleValueType,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let transformed = self.goodman_transform_map(m, m2, include_half_cycles);
+        validate_bin_size_compensation(bin_size_compensation)?;
+        let transformed =
+            self.goodman_transform_map(m, m2, include_half_cycles, bin_size_compensation);
         let summed = summed_histogram_internal(&transformed);
 
         let py_list = PyList::empty(py);
@@ -487,7 +494,7 @@ impl RainflowContext {
         Ok(py_list.into_any())
     }
 
-    #[pyo3(signature = (m, n_d, sigma_d, k, m2=None, include_half_cycles=false, q=None, mode=MinerDamageMode::Modified))]
+    #[pyo3(signature = (m, n_d, sigma_d, k, m2=None, include_half_cycles=false, bin_size_compensation=0.0, q=None, mode=MinerDamageMode::Modified))]
     fn fkm_miner_damage(
         &self,
         m: WaveformSampleValueType,
@@ -496,10 +503,13 @@ impl RainflowContext {
         k: f64,
         m2: Option<WaveformSampleValueType>,
         include_half_cycles: bool,
+        bin_size_compensation: WaveformSampleValueType,
         q: Option<f64>,
         mode: MinerDamageMode,
     ) -> PyResult<f64> {
-        let transformed = self.goodman_transform_map(m, m2, include_half_cycles);
+        validate_bin_size_compensation(bin_size_compensation)?;
+        let transformed =
+            self.goodman_transform_map(m, m2, include_half_cycles, bin_size_compensation);
         fkm_miner_damage_from_goodman_internal(&transformed, n_d, sigma_d, k, q, mode)
     }
 }
@@ -508,9 +518,18 @@ fn goodman_transform_internal(
     cycles: &CyclesMapWithHalfCycles,
     m: WaveformSampleValueType,
     m2: WaveformSampleValueType,
+    bin_size_compensation: WaveformSampleValueType,
 ) -> AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> {
     let mut result: AHashMap<OrderedFloat<WaveformSampleValueType>, WaveformSampleValueType> =
         AHashMap::new();
+
+    let bin_size_compensation = if bin_size_compensation.is_finite() && bin_size_compensation > 0.0
+    {
+        bin_size_compensation
+    } else {
+        0.0
+    };
+    let half_bin_size_compensation = bin_size_compensation * 0.5;
 
     let one_minus_m = 1.0 - m;
     let one_plus_m = 1.0 + m;
@@ -522,8 +541,14 @@ fn goodman_transform_internal(
         let from = from.into_inner();
         let to = to.into_inner();
 
-        let s_upper = from.max(to);
-        let s_lower = from.min(to);
+        let mut s_upper = from.max(to);
+        let mut s_lower = from.min(to);
+
+        // Worst-case compensation for quantization to bin centers: widen the cycle.
+        if half_bin_size_compensation != 0.0 {
+            s_upper += half_bin_size_compensation;
+            s_lower -= half_bin_size_compensation;
+        }
 
         let s_a = (s_upper - s_lower) / 2.0;
         let s_m = (s_upper + s_lower) / 2.0;
@@ -550,6 +575,15 @@ fn goodman_transform_internal(
     }
 
     result
+}
+
+fn validate_bin_size_compensation(bin_size_compensation: WaveformSampleValueType) -> PyResult<()> {
+    if !bin_size_compensation.is_finite() || bin_size_compensation < 0.0 {
+        return Err(PyTypeError::new_err(
+            "bin_size_compensation must be a finite number >= 0",
+        ));
+    }
+    Ok(())
 }
 
 #[pyfunction]
@@ -643,14 +677,16 @@ fn rainflow<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (cycles, m, m2=None))]
+#[pyo3(signature = (cycles, m, m2=None, bin_size_compensation=0.0))]
 fn goodman_transform<'py>(
     py: Python<'py>,
     cycles: Bound<'py, PyAny>,
     m: WaveformSampleValueType,
     m2: Option<WaveformSampleValueType>,
+    bin_size_compensation: WaveformSampleValueType,
 ) -> PyResult<Bound<'py, PyDict>> {
     let m2_value = m2.unwrap_or(m / 3.0);
+    validate_bin_size_compensation(bin_size_compensation)?;
     let dict = cycles.downcast_into::<PyDict>()?;
 
     let mut rust_cycles: CyclesMapWithHalfCycles = CyclesMapWithHalfCycles::new();
@@ -677,7 +713,7 @@ fn goodman_transform<'py>(
         );
     }
 
-    let transformed = goodman_transform_internal(&rust_cycles, m, m2_value);
+    let transformed = goodman_transform_internal(&rust_cycles, m, m2_value, bin_size_compensation);
 
     let py_result = PyDict::new(py);
     for (k, v) in transformed {

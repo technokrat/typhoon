@@ -24,6 +24,7 @@ def goodman_transform(
     cycles: Mapping[tuple[float, float], float] | Mapping[tuple[float, float], int],
     m: float,
     m2: float | None = ..., 
+    bin_size_compensation: float = ...,
 ) -> dict[float, float]:
     ...
 
@@ -73,6 +74,7 @@ class RainflowContext:
         m: float,
         m2: float | None = ...,
         include_half_cycles: bool = ...,
+        bin_size_compensation: float = ...,
     ) -> dict[float, float]: ...
 
     def summed_histogram(
@@ -80,6 +82,7 @@ class RainflowContext:
         m: float,
         m2: float | None = ...,
         include_half_cycles: bool = ...,
+        bin_size_compensation: float = ...,
     ) -> list[tuple[float, float]]: ...
 
     def fkm_miner_damage(
@@ -90,6 +93,7 @@ class RainflowContext:
         k: float,
         m2: float | None = ...,
         include_half_cycles: bool = ...,
+        bin_size_compensation: float = ...,
         q: float | None = ...,
         mode: MinerDamageMode = ...,
     ) -> float: ...

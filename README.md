@@ -1,6 +1,6 @@
 # typhoon
-[![CI](https://github.com/technokrat/typhoon/actions/workflows/CI.yml/badge.svg)](https://github.com/technokrat/typhoon/actions/workflows/CI.yml) ![PyPI - Version](https://img.shields.io/pypi/v/typhoon-rainflow)
 
+[![CI](https://github.com/technokrat/typhoon/actions/workflows/CI.yml/badge.svg)](https://github.com/technokrat/typhoon/actions/workflows/CI.yml) ![PyPI - Version](https://img.shields.io/pypi/v/typhoon-rainflow)
 
 Typhoon is a rainflow counting Python module written in Rust by Markus Wegmann (mw@technokrat.ch).
 
@@ -9,6 +9,7 @@ It uses a new windowed four-point counting method which can be run in parallel o
 It is therefore intended for real-time processing of load captures and serves as as crucial part of i-Spring's in-edge data processing chain.
 
 ## Installation
+
 Add the package `typhoon-rainflow` to your Python project, e.g.
 
 ```python
@@ -41,42 +42,43 @@ from typhoon import helper  # for helper utilities
 All arguments are keyword-compatible with the examples below.
 
 - `init_tracing() -> None`
-    - Initialize verbose tracing/logging from the Rust implementation.
-    - Intended mainly for debugging and performance analysis; it writes to stdout.
+  - Initialize verbose tracing/logging from the Rust implementation.
+  - Intended mainly for debugging and performance analysis; it writes to stdout.
 
 - `rainflow(waveform, last_peaks=None, bin_size=0.0, threshold=None, min_chunk_size=64*1024)`
-    - Perform windowed four-point rainflow counting on a 1D NumPy waveform.
-    - `waveform`: 1D `numpy.ndarray` of `float32` or `float64`.
-    - `last_peaks`: optional 1D array of peaks from the previous chunk (for streaming).
-    - `bin_size`: bin width for quantizing ranges; `0.0` disables quantization.
-    - `threshold`: minimum cycle amplitude to count; default `0.0`.
-    - `min_chunk_size`: minimum chunk size for internal parallelization.
-    - Returns `(cycles, residual_peaks)` where
-        - `cycles` is a dict `{(s_lower, s_upper): count}` and
-        - `residual_peaks` is a 1D NumPy array of remaining peaks to pass to the next call.
+  - Perform windowed four-point rainflow counting on a 1D NumPy waveform.
+  - `waveform`: 1D `numpy.ndarray` of `float32` or `float64`.
+  - `last_peaks`: optional 1D array of peaks from the previous chunk (for streaming).
+  - `bin_size`: bin width for quantizing ranges; `0.0` disables quantization.
+  - `threshold`: minimum cycle amplitude to count; default `0.0`.
+  - `min_chunk_size`: minimum chunk size for internal parallelization.
+  - Returns `(cycles, residual_peaks)` where
+    - `cycles` is a dict `{(s_lower, s_upper): count}` and
+    - `residual_peaks` is a 1D NumPy array of remaining peaks to pass to the next call.
 
-- `goodman_transform(cycles, m, m2=None)`
-    - Apply a (piecewise) Goodman-like mean stress correction to rainflow cycles.
-    - `cycles`: mapping `{(s_lower, s_upper): count}` (e.g. first return value of `rainflow`).
-    - `m`: main slope/parameter.
-    - `m2`: optional secondary slope; defaults to `m / 3` if omitted.
-    - Returns a dict `{s_a_ers: count}` where `s_a_ers` is the equivalent range.
+- `goodman_transform(cycles, m, m2=None, bin_size_compensation=0.0)`
+  - Apply a (piecewise) Goodman-like mean stress correction to rainflow cycles.
+  - `cycles`: mapping `{(s_lower, s_upper): count}` (e.g. first return value of `rainflow`).
+  - `m`: main slope/parameter.
+  - `m2`: optional secondary slope; defaults to `m / 3` if omitted.
+  - `bin_size_compensation`: optional widening of each cycle by `±bin_size_compensation/2` (worst-case compensation for quantization to bin centers).
+  - Returns a dict `{s_a_ers: count}` where `s_a_ers` is the equivalent range.
 
 - `summed_histogram(hist)`
-    - Build a descending cumulative histogram from the Goodman-transformed result.
-    - `hist`: mapping `{s_a_ers: count}` such as returned from `goodman_transform`.
-    - Returns a list of `(s_a_ers, cumulative_count)` pairs sorted from high to low range.
+  - Build a descending cumulative histogram from the Goodman-transformed result.
+  - `hist`: mapping `{s_a_ers: count}` such as returned from `goodman_transform`.
+  - Returns a list of `(s_a_ers, cumulative_count)` pairs sorted from high to low range.
 
 - `fkm_miner_damage(goodman_result, n_d, sigma_d, k, q=None, mode=MinerDamageMode.Modified) -> float`
-    - Compute a Miner damage coefficient $D$ from a Goodman-transformed collective.
-    - `goodman_result`: mapping `{sigma_a: count}` as returned from `goodman_transform`.
-    - `n_d`: $N_D$ (cycles allowed at endurance limit).
-    - `sigma_d`: $\sigma_D$ (endurance limit level).
-    - `k`: Woehler exponent $k$.
-    - `q`: exponent modifier for amplitudes below $\sigma_D$; defaults to `k - 1`.
-    - `mode`:
-        - `MinerDamageMode.Modified` (default): returns $D_{MM}$ (FKM modified Miner).
-        - `MinerDamageMode.Original`: returns $D_{OM}$ (original Miner, ignoring amplitudes below $\sigma_D$).
+  - Compute a Miner damage coefficient $D$ from a Goodman-transformed collective.
+  - `goodman_result`: mapping `{sigma_a: count}` as returned from `goodman_transform`.
+  - `n_d`: $N_D$ (cycles allowed at endurance limit).
+  - `sigma_d`: $\sigma_D$ (endurance limit level).
+  - `k`: Woehler exponent $k$.
+  - `q`: exponent modifier for amplitudes below $\sigma_D$; defaults to `k - 1`.
+  - `mode`:
+    - `MinerDamageMode.Modified` (default): returns $D_{MM}$ (FKM modified Miner).
+    - `MinerDamageMode.Original`: returns $D_{OM}$ (original Miner, ignoring amplitudes below $\sigma_D$).
 
 ### Stateful streaming (`RainflowContext`)
 
@@ -89,11 +91,11 @@ Key methods:
 - `process(waveform)`: update the internal state from one waveform chunk.
 - `to_counter()`: export the accumulated cycles as a Python `collections.Counter`.
 - `to_heatmap(include_half_cycles=False)`: export a dense 2D NumPy array for plotting (and the corresponding bin centers).
-    - When `include_half_cycles=True`, the current residual `last_peaks` are treated as half-cycles (each adjacent peak-pair contributes `0.5`).
-- `goodman_transform(m, m2=None, include_half_cycles=False)`: Goodman transform directly on the internal state.
-    - When `include_half_cycles=True`, the current residual `last_peaks` are treated as half-cycles (each adjacent peak-pair contributes `0.5`).
-- `summed_histogram(m, m2=None, include_half_cycles=False)`: convenience wrapper that returns the descending cumulative histogram (same format as `typhoon.summed_histogram`).
-- `fkm_miner_damage(m, n_d, sigma_d, k, m2=None, include_half_cycles=False, q=None, mode=MinerDamageMode.Modified)`: compute Miner damage directly from the internal accumulated cycles.
+  - When `include_half_cycles=True`, the current residual `last_peaks` are treated as half-cycles (each adjacent peak-pair contributes `0.5`).
+- `goodman_transform(m, m2=None, include_half_cycles=False, bin_size_compensation=0.0)`: Goodman transform directly on the internal state.
+  - When `include_half_cycles=True`, the current residual `last_peaks` are treated as half-cycles (each adjacent peak-pair contributes `0.5`).
+- `summed_histogram(m, m2=None, include_half_cycles=False, bin_size_compensation=0.0)`: convenience wrapper that returns the descending cumulative histogram (same format as `typhoon.summed_histogram`).
+- `fkm_miner_damage(m, n_d, sigma_d, k, m2=None, include_half_cycles=False, bin_size_compensation=0.0, q=None, mode=MinerDamageMode.Modified)`: compute Miner damage directly from the internal accumulated cycles.
 
 Example:
 
@@ -135,16 +137,16 @@ heatmap, bins = ctx.to_heatmap(include_half_cycles=True)
 The helper module provides convenience tools for post-processing and analysis.
 
 - `merge_cycle_counters(counters)`
-    - Merge multiple `dict`/`Counter` objects of the form `{(from, to): count}`.
-    - Useful when combining rainflow results from multiple chunks or channels.
+  - Merge multiple `dict`/`Counter` objects of the form `{(from, to): count}`.
+  - Useful when combining rainflow results from multiple chunks or channels.
 
 - `add_residual_half_cycles(counter, residual_peaks)`
-    - Convert the trailing `residual_peaks` from `rainflow` into half-cycles and add them to an existing counter.
-    - Each adjacent pair of peaks `(p_i, p_{i+1})` contributes `0.5` to the corresponding cycle key.
+  - Convert the trailing `residual_peaks` from `rainflow` into half-cycles and add them to an existing counter.
+  - Each adjacent pair of peaks `(p_i, p_{i+1})` contributes `0.5` to the corresponding cycle key.
 
 - `counter_to_full_interval_df(counter, bin_size=0.1, closed="right", round_decimals=12)`
-    - Convert a sparse `(from, to): count` mapping into a dense 2D `pandas.DataFrame` over all intervals.
-    - Returns a DataFrame with a `(from, to)` `MultiIndex` of `pd.Interval` and a single `"value"` column.
+  - Convert a sparse `(from, to): count` mapping into a dense 2D `pandas.DataFrame` over all intervals.
+  - Returns a DataFrame with a `(from, to)` `MultiIndex` of `pd.Interval` and a single `"value"` column.
 
 ### Woehler curves (`typhoon.woehler`)
 
@@ -152,33 +154,18 @@ The `typhoon.woehler` module provides helpers for evaluating S–N (Woehler) cur
 
 Key entry points are:
 
-- `WoehlerCurveParams(sd, nd, k1, k2=None, ts=None, tn=None)`
-        - Container for the curve parameters:
-                - `sd`: fatigue strength at `nd` cycles for the reference failure probability.
-                - `nd`: reference number of cycles (e.g. 1e6).
-                - `k1`: slope in the finite-life region.
-                - `k2`: optional slope in the endurance region; derived from the Miner
-                    rule if omitted.
-                - `ts` / `tn`: optional scattering parameters controlling probability
-                    transforms of `sd` and `nd`.
-- `WoehlerCurveParams.with_predamage(d_predamage, q=None)`
-        - Returns a new set of curve parameters modified by a pre-damage value $D_{predamage}$.
-        - Uses the FKM-style transformation:
-            - $\sigma_{D,dam} = \sigma_D\,(1-D_{predamage})^{1/q}$
-            - $N_{D,dam} = N_D\,(\sigma_{D,dam}/\sigma_D)^{-(k-q)}$ with $k=k_1$
-        - If `q` is omitted, defaults to `k1 - 1`.
-- `MinerType` enum
-        - Miner damage rule variant that determines the second slope `k2`:
-            `NONE`, `ORIGINAL`, `ELEMENTARY`, `HAIBACH`.
-- `woehler_log_space(minimum=1.0, maximum=1e8, n=101)`
-        - Convenience helper to generate a logarithmically spaced cycle axis for
-            plotting Woehler curves.
-- `woehler_loads_basic(cycles, params, miner=MinerType.NONE)`
-        - Compute a "native" Woehler curve without probability/scattering
-            transformation, but honouring the selected Miner type.
-- `woehler_loads(cycles, params, miner=MinerType.NONE, failure_probability=0.5)`
-        - Compute a probability-dependent Woehler curve using an internal
-            approximation of the normal inverse CDF.
+- `WoehlerCurveParams(sd, nd, k1, k2=None, ts=None, tn=None)` - Container for the curve parameters: - `sd`: fatigue strength at `nd` cycles for the reference failure probability. - `nd`: reference number of cycles (e.g. 1e6). - `k1`: slope in the finite-life region. - `k2`: optional slope in the endurance region; derived from the Miner
+  rule if omitted. - `ts` / `tn`: optional scattering parameters controlling probability
+  transforms of `sd` and `nd`.
+- `WoehlerCurveParams.with_predamage(d_predamage, q=None)` - Returns a new set of curve parameters modified by a pre-damage value $D_{predamage}$. - Uses the FKM-style transformation: - $\sigma_{D,dam} = \sigma_D\,(1-D_{predamage})^{1/q}$ - $N_{D,dam} = N_D\,(\sigma_{D,dam}/\sigma_D)^{-(k-q)}$ with $k=k_1$ - If `q` is omitted, defaults to `k1 - 1`.
+- `MinerType` enum - Miner damage rule variant that determines the second slope `k2`:
+  `NONE`, `ORIGINAL`, `ELEMENTARY`, `HAIBACH`.
+- `woehler_log_space(minimum=1.0, maximum=1e8, n=101)` - Convenience helper to generate a logarithmically spaced cycle axis for
+  plotting Woehler curves.
+- `woehler_loads_basic(cycles, params, miner=MinerType.NONE)` - Compute a "native" Woehler curve without probability/scattering
+  transformation, but honouring the selected Miner type.
+- `woehler_loads(cycles, params, miner=MinerType.NONE, failure_probability=0.5)` - Compute a probability-dependent Woehler curve using an internal
+  approximation of the normal inverse CDF.
 
 ## Example Usage
 
