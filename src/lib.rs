@@ -903,11 +903,11 @@ fn fkm_konsequent_miner_damage_from_goodman_internal(
         }
     }
 
-    if w <= 0.0 || !w.is_finite() {
-        return Ok(1.0)
+    match w {
+        w if !w.is_finite() => Ok(0.0),
+        w if w <= 0.0 => Ok(1.0),
+        w => Ok(1.0 / w),
     }
-
-    Ok(1.0 / w)
 }
 
 fn fkm_modified_miner_params(
